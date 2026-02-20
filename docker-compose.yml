@@ -1,0 +1,24 @@
+services:
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_AGENT_URL=${VITE_AGENT_URL:-ws://localhost:8765}
+    depends_on:
+      - packet-agent
+
+  packet-agent:
+    build:
+      context: ./packet-agent
+      dockerfile: Dockerfile
+    ports:
+      - "8765:8765"
+    command: ["python", "agent.py", "--host", "0.0.0.0", "--port", "8765", "--bpf", "${FLEX_AGENT_BPF:-tcp or udp}"]
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    security_opt:
+      - apparmor:unconfined
