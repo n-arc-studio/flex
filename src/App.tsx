@@ -147,6 +147,8 @@ function App() {
   const [mode, setMode] = useState<InputMode>('mock')
   const [agentUrl, setAgentUrl] = useState<string>(import.meta.env.VITE_AGENT_URL ?? 'ws://127.0.0.1:8765')
   const [agentStatus, setAgentStatus] = useState<string>('Disconnected')
+  const [showSelfLoops, setShowSelfLoops] = useState<boolean>(true)
+  const [isMapMaximized, setIsMapMaximized] = useState<boolean>(false)
   const [reconnectToken, setReconnectToken] = useState<number>(0)
   const [mockConnections, setMockConnections] = useState<Connection[]>(initialConnections)
   const [liveConnections, setLiveConnections] = useState<Connection[]>([])
@@ -154,10 +156,20 @@ function App() {
   const [selectedConnectionId, setSelectedConnectionId] = useState<string>(initialConnections[0].id)
 
   const connections = mode === 'mock' ? mockConnections : liveConnections
+  const visibleConnections = useMemo(
+    () => (showSelfLoops ? connections : connections.filter((connection) => connection.source !== connection.target)),
+    [connections, showSelfLoops],
+  )
+  const visibleConnectionIds = useMemo(() => new Set(visibleConnections.map((connection) => connection.id)), [visibleConnections])
+
+  const visibleDiffEvents = useMemo(
+    () => (showSelfLoops ? diffEvents : diffEvents.filter((event) => visibleConnectionIds.has(event.connectionId))),
+    [diffEvents, showSelfLoops, visibleConnectionIds],
+  )
 
   const selectedConnection = useMemo(
-    () => connections.find((connection) => connection.id === selectedConnectionId),
-    [connections, selectedConnectionId],
+    () => visibleConnections.find((connection) => connection.id === selectedConnectionId),
+    [visibleConnections, selectedConnectionId],
   )
 
   const activeDevices = useMemo<Device[]>(() => {
@@ -166,7 +178,7 @@ function App() {
     }
 
     const uniqueIds = new Set<string>()
-    liveConnections.forEach((connection) => {
+    visibleConnections.forEach((connection) => {
       uniqueIds.add(connection.source)
       uniqueIds.add(connection.target)
     })
@@ -177,7 +189,7 @@ function App() {
       role: 'Endpoint',
       zone: 'Observed',
     }))
-  }, [mode, liveConnections])
+  }, [mode, visibleConnections])
 
   const elements = useMemo(
     () => [
@@ -189,7 +201,7 @@ function App() {
           zone: device.zone,
         },
       })),
-      ...connections.map((connection) => ({
+      ...visibleConnections.map((connection) => ({
         data: {
           id: connection.id,
           source: connection.source,
@@ -200,8 +212,46 @@ function App() {
         },
       })),
     ],
-    [activeDevices, connections],
+    [activeDevices, visibleConnections],
   )
+
+  const graphLayout = useMemo(() => {
+    const nodeCount = activeDevices.length
+
+    if (nodeCount <= 1) {
+      return {
+        name: 'grid',
+        fit: true,
+        padding: 30,
+        rows: 1,
+      }
+    }
+
+    if (nodeCount <= 12) {
+      return {
+        name: 'circle',
+        fit: true,
+        padding: 40,
+        spacingFactor: 1.4,
+        avoidOverlap: true,
+        animate: false,
+      }
+    }
+
+    return {
+      name: 'cose',
+      fit: true,
+      padding: 40,
+      animate: false,
+      randomize: true,
+      componentSpacing: 120,
+      nodeRepulsion: 800000,
+      nodeOverlap: 20,
+      idealEdgeLength: 120,
+      edgeElasticity: 120,
+      gravity: 1,
+    }
+  }, [activeDevices.length])
 
   useEffect(() => {
     if (mode !== 'mock') {
@@ -249,6 +299,17 @@ function App() {
     setDiffEvents([])
     setSelectedConnectionId('')
   }, [mode])
+
+  useEffect(() => {
+    if (!selectedConnectionId && visibleConnections.length > 0) {
+      setSelectedConnectionId(visibleConnections[0].id)
+      return
+    }
+
+    if (selectedConnectionId && !visibleConnectionIds.has(selectedConnectionId)) {
+      setSelectedConnectionId(visibleConnections[0]?.id ?? '')
+    }
+  }, [selectedConnectionId, visibleConnections, visibleConnectionIds])
 
   useEffect(() => {
     if (mode !== 'live') {
@@ -336,7 +397,7 @@ function App() {
   }, [mode, agentUrl, reconnectToken])
 
   return (
-    <div className="app">
+    <div className={`app ${isMapMaximized ? 'map-maximized' : ''}`}>
       <header className="header">
         <div>
           <h1>FLEX</h1>
@@ -371,17 +432,31 @@ function App() {
             Reconnect
           </button>
 
+          <label>
+            <input
+              type="checkbox"
+              checked={showSelfLoops}
+              onChange={(event) => setShowSelfLoops(event.target.checked)}
+            />
+            Show self-loop
+          </label>
+
           <div className="agent-status">Agent: {agentStatus}</div>
         </div>
       </section>
 
       <section className="top-grid">
         <div className="card graph-card">
-          <h2>Equipment Connectivity Map</h2>
+          <div className="graph-header">
+            <h2>Equipment Connectivity Map</h2>
+            <button type="button" className="graph-toggle" onClick={() => setIsMapMaximized((value) => !value)}>
+              {isMapMaximized ? 'Restore' : 'Maximize'}
+            </button>
+          </div>
           <CytoscapeComponent
             elements={elements}
-            style={{ width: '100%', height: '420px' }}
-            layout={{ name: 'cose', fit: true, padding: 30 }}
+            style={{ width: '100%', height: isMapMaximized ? '72vh' : '420px' }}
+            layout={graphLayout}
             stylesheet={[
               {
                 selector: 'node',
@@ -480,7 +555,7 @@ function App() {
         </div>
       </section>
 
-      <section className="card">
+      <section className="card diff-card">
         <h2>Connection Diff Feed</h2>
         <table>
           <thead>
@@ -491,12 +566,12 @@ function App() {
             </tr>
           </thead>
           <tbody>
-            {diffEvents.length === 0 ? (
+            {visibleDiffEvents.length === 0 ? (
               <tr>
                 <td colSpan={3}>{mode === 'live' ? 'Waiting for packet events...' : 'Waiting for changes...'}</td>
               </tr>
             ) : (
-              diffEvents.map((event) => (
+              visibleDiffEvents.map((event) => (
                 <tr key={event.id} onClick={() => setSelectedConnectionId(event.connectionId)}>
                   <td>{event.timestamp}</td>
                   <td>{event.connectionId}</td>

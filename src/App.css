@@ -108,6 +108,43 @@
   min-height: 460px;
 }
 
+.graph-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.graph-header h2 {
+  margin: 0;
+}
+
+.graph-toggle {
+  height: 32px;
+  border: 1px solid #475569;
+  border-radius: 8px;
+  background: #1e293b;
+  color: #e2e8f0;
+  padding: 0 12px;
+  cursor: pointer;
+}
+
+.map-maximized .detail-card,
+.map-maximized .diff-card,
+.map-maximized .control-card,
+.map-maximized .header {
+  display: none;
+}
+
+.map-maximized .top-grid {
+  grid-template-columns: 1fr;
+}
+
+.map-maximized .graph-card {
+  min-height: calc(100vh - 40px);
+}
+
 .detail-card dl {
   margin: 0;
   display: grid;

@@ -33,6 +33,13 @@ docker compose up --build
 copy .env.example .env
 ```
 
+カスタムポートやIPペアでプロトコル名を上書きしたい場合は `.env` に以下を設定できます。
+
+```dotenv
+FLEX_PROTOCOL_PORT_MAP=OPC UA:62557,MyProto:12000
+FLEX_ENDPOINT_PROTOCOL_MAP=192.168.1.50-192.168.1.100:OPC UA
+```
+
 ### 停止
 
 ```bash

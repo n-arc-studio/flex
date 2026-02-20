@@ -28,6 +28,54 @@ PROTOCOL_PORT_MAP = {
 }
 
 
+def parse_protocol_port_map(raw: str) -> Dict[int, str]:
+    mapping: Dict[int, str] = {}
+    if not raw:
+        return mapping
+
+    for item in raw.split(","):
+        part = item.strip()
+        if not part or ":" not in part:
+            continue
+        name, port_text = part.rsplit(":", 1)
+        name = name.strip()
+        port_text = port_text.strip()
+        if not name:
+            continue
+        try:
+            port = int(port_text)
+        except ValueError:
+            continue
+        if 0 < port <= 65535:
+            mapping[port] = name
+
+    return mapping
+
+
+def parse_endpoint_protocol_map(raw: str) -> Dict[frozenset[str], str]:
+    mapping: Dict[frozenset[str], str] = {}
+    if not raw:
+        return mapping
+
+    for item in raw.split(","):
+        part = item.strip()
+        if not part or ":" not in part:
+            continue
+
+        pair_text, name = part.rsplit(":", 1)
+        name = name.strip()
+        if not name or "-" not in pair_text:
+            continue
+
+        ip1, ip2 = [segment.strip() for segment in pair_text.split("-", 1)]
+        if not ip1 or not ip2:
+            continue
+
+        mapping[frozenset((ip1, ip2))] = name
+
+    return mapping
+
+
 @dataclass
 class ConnectionStat:
     src_ip: str
@@ -40,18 +88,25 @@ class ConnectionStat:
     last_seen: float = 0.0
 
 
-def infer_protocol(port: int, l4_protocol: str) -> str:
-    if port in PROTOCOL_PORT_MAP:
-        return PROTOCOL_PORT_MAP[port]
+def infer_protocol(port: int, l4_protocol: str, protocol_port_map: Dict[int, str]) -> str:
+    if port in protocol_port_map:
+        return protocol_port_map[port]
     return f"{l4_protocol}/{port}"
 
 
 class PacketAggregator:
-    def __init__(self, idle_timeout_seconds: int = 120) -> None:
+    def __init__(
+        self,
+        idle_timeout_seconds: int = 120,
+        protocol_port_map: Optional[Dict[int, str]] = None,
+        endpoint_protocol_map: Optional[Dict[frozenset[str], str]] = None,
+    ) -> None:
         self._stats: Dict[Tuple[str, str, str, int], ConnectionStat] = {}
         self._lock = threading.Lock()
         self._idle_timeout_seconds = idle_timeout_seconds
         self._total_packets = 0
+        self._protocol_port_map = protocol_port_map or dict(PROTOCOL_PORT_MAP)
+        self._endpoint_protocol_map = endpoint_protocol_map or {}
 
     def ingest_packet(self, packet) -> None:
         if IP not in packet:
@@ -63,15 +118,39 @@ class PacketAggregator:
 
         if TCP in packet:
             l4_protocol = "TCP"
+            src_port = int(packet[TCP].sport)
             dst_port = int(packet[TCP].dport)
         elif UDP in packet:
             l4_protocol = "UDP"
+            src_port = int(packet[UDP].sport)
             dst_port = int(packet[UDP].dport)
         else:
             return
 
-        protocol = infer_protocol(dst_port, l4_protocol)
-        key = (src_ip, dst_ip, protocol, dst_port)
+        has_dst_mapping = dst_port in self._protocol_port_map
+        has_src_mapping = src_port in self._protocol_port_map
+
+        if has_dst_mapping:
+            protocol = infer_protocol(dst_port, l4_protocol, self._protocol_port_map)
+            service_port = dst_port
+            flow_src_ip = src_ip
+            flow_dst_ip = dst_ip
+        elif has_src_mapping:
+            protocol = infer_protocol(src_port, l4_protocol, self._protocol_port_map)
+            service_port = src_port
+            flow_src_ip = dst_ip
+            flow_dst_ip = src_ip
+        else:
+            service_port = min(src_port, dst_port)
+            protocol = infer_protocol(service_port, l4_protocol, self._protocol_port_map)
+            flow_src_ip, flow_dst_ip = sorted((src_ip, dst_ip))
+
+        endpoint_protocol = self._endpoint_protocol_map.get(frozenset((src_ip, dst_ip)))
+        if endpoint_protocol:
+            protocol = endpoint_protocol
+            flow_src_ip, flow_dst_ip = sorted((src_ip, dst_ip))
+
+        key = (flow_src_ip, flow_dst_ip, protocol, service_port)
         now = time.time()
         packet_size = len(packet)
 
@@ -79,7 +158,7 @@ class PacketAggregator:
             self._total_packets += 1
             stat = self._stats.get(key)
             if stat is None:
-                stat = ConnectionStat(src_ip=src_ip, dst_ip=dst_ip, protocol=protocol, port=dst_port)
+                stat = ConnectionStat(src_ip=flow_src_ip, dst_ip=flow_dst_ip, protocol=protocol, port=service_port)
                 self._stats[key] = stat
 
             stat.packets += 1
@@ -229,12 +308,32 @@ def parse_args() -> argparse.Namespace:
         default="tcp or udp",
         help="Optional BPF filter, example: 'tcp port 502 or tcp port 44818'",
     )
+    parser.add_argument(
+        "--protocol-port-map",
+        type=str,
+        default="",
+        help="Extra protocol map, format: 'OPC UA:62557,MyProto:12345'",
+    )
+    parser.add_argument(
+        "--endpoint-protocol-map",
+        type=str,
+        default="",
+        help="Endpoint protocol map, format: '192.168.1.50-192.168.1.100:OPC UA'",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    aggregator = PacketAggregator(idle_timeout_seconds=args.idle_timeout)
+    protocol_port_map = dict(PROTOCOL_PORT_MAP)
+    protocol_port_map.update(parse_protocol_port_map(args.protocol_port_map))
+    endpoint_protocol_map = parse_endpoint_protocol_map(args.endpoint_protocol_map)
+
+    aggregator = PacketAggregator(
+        idle_timeout_seconds=args.idle_timeout,
+        protocol_port_map=protocol_port_map,
+        endpoint_protocol_map=endpoint_protocol_map,
+    )
     stop_capture = threading.Event()
     capture_thread = threading.Thread(
         target=capture_loop,
