@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import CytoscapeComponent from 'react-cytoscapejs'
+import type { Core, StylesheetStyle } from 'cytoscape'
 import './App.css'
 
 type Agent = {
@@ -222,7 +223,7 @@ const protocolColorMap: Record<string, string> = {
 }
 
 function App() {
-  const cyRef = useRef<any>(null)
+  const cyRef = useRef<Core | null>(null)
   const [locale, setLocale] = useState<Locale>(() => (navigator.language?.toLowerCase().startsWith('ja') ? 'ja' : 'en'))
   const [authToken, setAuthToken] = useState<string>(() => localStorage.getItem('flex_auth_token') ?? '')
   const [loginUsername, setLoginUsername] = useState<string>('admin')
@@ -275,11 +276,14 @@ function App() {
     return `${REGISTRY_WS_BASE}?token=${encodeURIComponent(authToken)}`
   }, [authToken])
 
-  const apiFetch = (path: string, init: RequestInit = {}) => {
-    const headers = new Headers(init.headers || {})
-    if (authToken) headers.set('Authorization', `Bearer ${authToken}`)
-    return fetch(`${REGISTRY_HTTP_URL}${path}`, { ...init, headers })
-  }
+  const apiFetch = useCallback(
+    (path: string, init: RequestInit = {}) => {
+      const headers = new Headers(init.headers || {})
+      if (authToken) headers.set('Authorization', `Bearer ${authToken}`)
+      return fetch(`${REGISTRY_HTTP_URL}${path}`, { ...init, headers })
+    },
+    [authToken],
+  )
 
   const connectedAgents = useMemo(() => agents.filter((agent) => agent.status === 'connected').length, [agents])
   const totalPackets = useMemo(() => agents.reduce((sum, agent) => sum + agent.total_packets, 0), [agents])
@@ -405,7 +409,7 @@ function App() {
   const allAssetIps = useMemo(() => assets.map((asset) => asset.ip), [assets])
   const allDiffIds = useMemo(() => diffs.map((diff) => diff.id).filter((id): id is number => typeof id === 'number'), [diffs])
 
-  const refreshSnapshot = async () => {
+  const refreshSnapshot = useCallback(async () => {
     const response = await apiFetch('/api/topology/snapshot')
     if (response.status === 401) {
       setAuthToken('')
@@ -432,7 +436,42 @@ function App() {
     if (payload.assets.length > 0) {
       setSelectedAssetIp((previous) => previous || payload.assets[0].ip)
     }
-  }
+  }, [apiFetch])
+
+  const loadIntegrationQueue = useCallback(async () => {
+    const response = await apiFetch('/api/integrations/queue?limit=200')
+    if (!response.ok) return
+    const payload = (await response.json()) as { queue: QueueItem[]; stats: QueueStat[] }
+    setQueueItems(payload.queue || [])
+    setQueueStats(payload.stats || [])
+  }, [apiFetch])
+
+  const loadInboundEvents = useCallback(async () => {
+    const response = await apiFetch('/api/inbound/events?limit=200')
+    if (!response.ok) return
+    const payload = (await response.json()) as { events: InboundEventItem[] }
+    setInboundEvents(payload.events || [])
+  }, [apiFetch])
+
+  const loadIntegrationMetrics = useCallback(async () => {
+    const response = await apiFetch('/api/integrations/metrics')
+    if (!response.ok) return
+    const payload = (await response.json()) as IntegrationMetrics
+    setIntegrationMetrics(payload)
+  }, [apiFetch])
+
+  const fetchSlaSummary = useCallback(async () => {
+    const response = await apiFetch('/api/sla/summary')
+    if (!response.ok) return
+    const payload = (await response.json()) as {
+      open_by_severity: Array<{ severity: string; count: number }>
+      mtta_seconds: number
+      mttr_seconds: number
+    }
+    setSlaMttaSeconds(payload.mtta_seconds)
+    setSlaMttrSeconds(payload.mttr_seconds)
+    setOpenBySeverityText((payload.open_by_severity || []).map((item) => `${item.severity}:${item.count}`).join(' | '))
+  }, [apiFetch])
 
   const login = async () => {
     setLoginError('')
@@ -481,14 +520,19 @@ function App() {
 
   useEffect(() => {
     if (!selectedAsset) return
-    setAssetLabel(selectedAsset.label ?? '')
-    setAssetRole(selectedAsset.role)
-    setAssetCriticality(selectedAsset.criticality)
+    const timer = setTimeout(() => {
+      setAssetLabel(selectedAsset.label ?? '')
+      setAssetRole(selectedAsset.role)
+      setAssetCriticality(selectedAsset.criticality)
+    }, 0)
+    return () => clearTimeout(timer)
   }, [selectedAsset])
 
   useEffect(() => {
     if (!authToken) return
-    void refreshSnapshot()
+    const snapshotTimer = setTimeout(() => {
+      void refreshSnapshot()
+    }, 0)
 
     const socket = new WebSocket(wsUrl)
     socket.onmessage = (event) => {
@@ -559,27 +603,37 @@ function App() {
     }
 
     return () => {
+      clearTimeout(snapshotTimer)
       if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
         socket.close()
       }
     }
-  }, [authToken, wsUrl])
+  }, [authToken, wsUrl, refreshSnapshot])
 
   useEffect(() => {
-    setSelectedAssetIps((previous) => previous.filter((ip) => allAssetIps.includes(ip)))
+    const timer = setTimeout(() => {
+      setSelectedAssetIps((previous) => previous.filter((ip) => allAssetIps.includes(ip)))
+    }, 0)
+    return () => clearTimeout(timer)
   }, [allAssetIps])
 
   useEffect(() => {
-    setSelectedDiffIds((previous) => previous.filter((id) => allDiffIds.includes(id)))
+    const timer = setTimeout(() => {
+      setSelectedDiffIds((previous) => previous.filter((id) => allDiffIds.includes(id)))
+    }, 0)
+    return () => clearTimeout(timer)
   }, [allDiffIds])
 
   useEffect(() => {
     if (tab !== 'operations') return
-    void fetchSlaSummary()
-    void loadIntegrationQueue()
-    void loadInboundEvents()
-    void loadIntegrationMetrics()
-  }, [tab])
+    const timer = setTimeout(() => {
+      void fetchSlaSummary()
+      void loadIntegrationQueue()
+      void loadInboundEvents()
+      void loadIntegrationMetrics()
+    }, 0)
+    return () => clearTimeout(timer)
+  }, [tab, fetchSlaSummary, loadIntegrationQueue, loadInboundEvents, loadIntegrationMetrics])
 
   const saveAsset = async () => {
     if (!selectedAssetIp) return
@@ -716,14 +770,6 @@ function App() {
     await refreshSnapshot()
   }
 
-  const loadIntegrationQueue = async () => {
-    const response = await apiFetch('/api/integrations/queue?limit=200')
-    if (!response.ok) return
-    const payload = (await response.json()) as { queue: QueueItem[]; stats: QueueStat[] }
-    setQueueItems(payload.queue || [])
-    setQueueStats(payload.stats || [])
-  }
-
   const retryIntegrationQueue = async (resetDead: boolean) => {
     const response = await apiFetch('/api/integrations/queue/retry', {
       method: 'POST',
@@ -757,19 +803,6 @@ function App() {
     await loadIntegrationMetrics()
   }
 
-  const loadInboundEvents = async () => {
-    const response = await apiFetch('/api/inbound/events?limit=200')
-    if (!response.ok) return
-    const payload = (await response.json()) as { events: InboundEventItem[] }
-    setInboundEvents(payload.events || [])
-  }
-
-  const loadIntegrationMetrics = async () => {
-    const response = await apiFetch('/api/integrations/metrics')
-    if (!response.ok) return
-    const payload = (await response.json()) as IntegrationMetrics
-    setIntegrationMetrics(payload)
-  }
 
   const testIntegration = async (id: number) => {
     const response = await apiFetch(`/api/integrations/${id}/test`, { method: 'POST' })
@@ -801,18 +834,45 @@ function App() {
     await refreshSnapshot()
   }
 
-  const fetchSlaSummary = async () => {
-    const response = await apiFetch('/api/sla/summary')
-    if (!response.ok) return
-    const payload = (await response.json()) as {
-      open_by_severity: Array<{ severity: string; count: number }>
-      mtta_seconds: number
-      mttr_seconds: number
-    }
-    setSlaMttaSeconds(payload.mtta_seconds)
-    setSlaMttrSeconds(payload.mttr_seconds)
-    setOpenBySeverityText((payload.open_by_severity || []).map((item) => `${item.severity}:${item.count}`).join(' | '))
-  }
+
+  const cyStylesheet = useMemo<StylesheetStyle[]>(
+    () => [
+      {
+        selector: 'node',
+        style: {
+          label: 'data(label)',
+          'background-color': 'data(color)',
+          'border-width': 2,
+          'border-color': 'data(borderColor)',
+          color: '#e2e8f0',
+          'font-size': topologyDensity === 'high' ? 8 : topologyDensity === 'medium' ? 9 : 10,
+          'text-wrap': 'wrap',
+          'text-max-width': topologyDensity === 'high' ? '80' : '120',
+          'text-background-opacity': topologyDensity === 'high' ? 0.28 : 0.55,
+          'text-background-color': '#0f172a',
+          'text-background-padding': '2',
+          'min-zoomed-font-size': topologyDensity === 'high' ? 12 : 8,
+        },
+      },
+      {
+        selector: 'edge',
+        style: {
+          width: 'data(width)',
+          label: 'data(label)',
+          'curve-style': 'bezier',
+          'line-color': 'data(edgeColor)',
+          'target-arrow-shape': 'triangle',
+          'target-arrow-color': 'data(edgeColor)',
+          color: '#cbd5e1',
+          'font-size': topologyDensity === 'high' ? 7 : 9,
+          'text-background-opacity': topologyDensity === 'high' ? 0.2 : 0.45,
+          'text-background-color': '#0f172a',
+          'text-background-padding': '1',
+        },
+      },
+    ],
+    [topologyDensity],
+  )
 
   const clearPacketData = async (target: 'all' | 'connections' | 'diffs') => {
     const response = await apiFetch('/api/packets/clear', {
@@ -927,41 +987,7 @@ function App() {
             cy={(cy) => {
               cyRef.current = cy
             }}
-            stylesheet={[
-              {
-                selector: 'node',
-                style: {
-                  label: 'data(label)',
-                  'background-color': 'data(color)',
-                  'border-width': 2,
-                  'border-color': 'data(borderColor)',
-                  color: '#e2e8f0',
-                  'font-size': topologyDensity === 'high' ? 8 : topologyDensity === 'medium' ? 9 : 10,
-                  'text-wrap': 'wrap',
-                  'text-max-width': topologyDensity === 'high' ? 80 : 120,
-                  'text-background-opacity': topologyDensity === 'high' ? 0.28 : 0.55,
-                  'text-background-color': '#0f172a',
-                  'text-background-padding': 2,
-                  'min-zoomed-font-size': topologyDensity === 'high' ? 12 : 8,
-                },
-              },
-              {
-                selector: 'edge',
-                style: {
-                  width: 'data(width)',
-                  label: 'data(label)',
-                  'curve-style': 'bezier',
-                  'line-color': 'data(edgeColor)',
-                  'target-arrow-shape': 'triangle',
-                  'target-arrow-color': 'data(edgeColor)',
-                  color: '#cbd5e1',
-                  'font-size': topologyDensity === 'high' ? 7 : 9,
-                  'text-background-opacity': topologyDensity === 'high' ? 0.2 : 0.45,
-                  'text-background-color': '#0f172a',
-                  'text-background-padding': 1,
-                },
-              },
-            ] as any}
+            stylesheet={cyStylesheet}
           />
         </section>
       ) : null}
