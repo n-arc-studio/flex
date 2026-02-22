@@ -16,7 +16,7 @@ npm run dev
 
 画面: `http://localhost:5173`
 
-## Dockerで同時起動（Frontend + Agent）
+## Dockerで同時起動（Frontend + Registry）
 
 ### 起動
 
