@@ -2,68 +2,61 @@ import { useEffect, useMemo, useState } from 'react'
 import CytoscapeComponent from 'react-cytoscapejs'
 import './App.css'
 
-type ConnectionStatus = 'confirmed' | 'unverified' | 'conflict'
-type InputMode = 'mock' | 'live'
-type Locale = 'ja' | 'en'
-type MenuTab = 'overview' | 'agents' | 'settings'
-
-type Connection = {
-  id: string
-  source: string
-  target: string
-  agentId: string
-  agentName: string
-  protocol: string
-  port: number
-  confidence: number
-  basis: 'passive' | 'config' | 'hybrid'
-  status: ConnectionStatus
-  bandwidthKbps: number
-  lastSeen: string
-}
-
-type DiffEvent = { id: string; timestamp: string; connectionId: string; message: string }
-type AgentRuntime = { state: 'connected' | 'disconnected'; packetCount: number; lastHeartbeat: string | null }
-type RegistryAgent = { id: string; name: string; status: 'connected' | 'disconnected' }
-
-type LiveConnectionPayload = {
-  connection_id: string
+type Agent = {
   agent_id: string
   agent_name: string
+  status: 'connected' | 'disconnected'
+  total_packets: number
+  active_connections: number
+  first_seen: string
+  last_seen: string
+}
+
+type Asset = {
+  ip: string
+  label: string | null
+  role: string
+  criticality: string
+  first_seen: string
+  last_seen: string
+  last_agent_id: string | null
+}
+
+type Connection = {
+  connection_key: string
+  connection_id: string
   src_ip: string
   dst_ip: string
   protocol: string
   port: number
   packets: number
   bytes_per_sec: number
+  first_seen: string
   last_seen: string
+  last_agent_id: string
+  last_agent_name: string
 }
 
-type AgentMessage =
-  | {
-      type: 'registry_snapshot'
-      payload: {
-        agents: Array<{
-          agent_id: string
-          agent_name: string
-          status: 'connected' | 'disconnected'
-          total_packets: number
-          active_connections: number
-          last_seen: string
-        }>
-      }
-    }
-  | {
-      type: 'registry_agent_update'
-      payload: {
-        agent_id: string
-        agent_name: string
-        status: 'connected' | 'disconnected'
-        total_packets: number
-        last_seen: string
-      }
-    }
-  | { type: 'connection_update'; payload: LiveConnectionPayload }
+type DiffEvent = {
+  id?: number
+  event_type: string
+  message: string
+  connection_key: string
+  src_ip: string
+  dst_ip: string
+  protocol: string
+  port: number
+  agent_id: string
+  created_at: string
+}
+
+type SnapshotPayload = {
+  agents: Agent[]
+  assets: Asset[]
+  connections: Connection[]
+  diffs: DiffEvent[]
+  timestamp: string
+}
 
 type TokenIssueResponse = {
   token: string
@@ -73,200 +66,189 @@ type TokenIssueResponse = {
   download: { windows: string; linux: string }
 }
 
+type UiMessage =
+  | { type: 'topology_snapshot'; payload: SnapshotPayload }
+  | { type: 'registry_agent_update'; payload: Agent }
+  | {
+      type: 'connection_update'
+      payload: {
+        connection_id: string
+        agent_id: string
+        agent_name: string
+        src_ip: string
+        dst_ip: string
+        protocol: string
+        port: number
+        packets: number
+        bytes_per_sec: number
+        last_seen: string
+      }
+    }
+  | { type: 'connection_diff'; payload: DiffEvent }
+
 const REGISTRY_HTTP_URL = import.meta.env.VITE_REGISTRY_HTTP_URL ?? 'http://127.0.0.1:8780'
 const REGISTRY_WS_URL = REGISTRY_HTTP_URL.replace(/^http/, 'ws') + '/ws/ui'
 
-const textMap = {
-  ja: {
-    appSubtitle: 'Factory Link Explorer',
-    input: '入力',
-    mockData: 'モック',
-    realPacketStream: 'Live',
-    language: '言語',
-    mode: 'モード',
-    livePacketAgent: 'Live (Registry)',
-    menu: 'メニュー',
-    menuOverview: 'Overview',
-    menuAgents: 'Agents + Onboarding',
-    menuSettings: 'Settings',
-    showSelfLoop: '自己ループ表示',
-    agent: 'Agent',
-    disconnected: '未接続',
-    connected: '接続済み',
-    packets: 'packet',
-    connectedAgents: '接続Agent',
-    equipmentConnectivityMap: '設備接続マップ',
-    connectionDetails: '接続詳細',
-    connectionDiffFeed: '接続差分フィード',
-    agentManager: 'Agent一覧',
-    issueToken: '① トークン発行',
-    downloadBundle: '② エージェント一式ダウンロード',
-    terminalConfig: '③ 端末でconfig実施',
-    heartbeatStart: '④ ハートビート収集開始',
-    serviceInstall: '⑤ サービス自動登録',
-    tokenTtlMinutes: 'トークン有効期限(分)',
-    generateToken: 'トークン発行',
-    enrollmentToken: 'Enrollment Token',
-    windowsBundle: 'Windows版をダウンロード',
-    linuxBundle: 'Linux版をダウンロード',
-    copy: 'コピー',
-    configCommand: 'Configコマンド',
-    runCommand: 'Runコマンド',
-    installCommand: 'Service登録コマンド',
-    noAgents: '接続中のAgentなし',
-    waitingPacketEvents: 'イベント待機中...',
-  },
-  en: {
-    appSubtitle: 'Factory Link Explorer',
-    input: 'Input',
-    mockData: 'Mock',
-    realPacketStream: 'Live',
-    language: 'Language',
-    mode: 'Mode',
-    livePacketAgent: 'Live (Registry)',
-    menu: 'Menu',
-    menuOverview: 'Overview',
-    menuAgents: 'Agents + Onboarding',
-    menuSettings: 'Settings',
-    showSelfLoop: 'Show self-loop',
-    agent: 'Agent',
-    disconnected: 'Disconnected',
-    connected: 'Connected',
-    packets: 'packets',
-    connectedAgents: 'Connected Agents',
-    equipmentConnectivityMap: 'Connectivity Map',
-    connectionDetails: 'Connection Details',
-    connectionDiffFeed: 'Diff Feed',
-    agentManager: 'Agents',
-    issueToken: '① Issue token',
-    downloadBundle: '② Download agent bundle',
-    terminalConfig: '③ Run config in terminal',
-    heartbeatStart: '④ Start heartbeat collection',
-    serviceInstall: '⑤ Install auto service',
-    tokenTtlMinutes: 'Token TTL (min)',
-    generateToken: 'Issue token',
-    enrollmentToken: 'Enrollment Token',
-    windowsBundle: 'Download Windows bundle',
-    linuxBundle: 'Download Linux bundle',
-    copy: 'Copy',
-    configCommand: 'Config command',
-    runCommand: 'Run command',
-    installCommand: 'Install service command',
-    noAgents: 'No connected agents',
-    waitingPacketEvents: 'Waiting for events...',
-  },
-} as const
+type Tab = 'overview' | 'assets' | 'events' | 'onboarding'
 
 function App() {
-  const initialLocale: Locale =
-    typeof navigator !== 'undefined' && navigator.language.toLowerCase().startsWith('ja') ? 'ja' : 'en'
-
-  const [locale, setLocale] = useState<Locale>(initialLocale)
-  const [mode, setMode] = useState<InputMode>('live')
-  const [activeMenu, setActiveMenu] = useState<MenuTab>('agents')
-  const [showSelfLoops, setShowSelfLoops] = useState<boolean>(true)
-  const [liveConnections, setLiveConnections] = useState<Connection[]>([])
-  const [diffEvents, setDiffEvents] = useState<DiffEvent[]>([])
-  const [registryAgents, setRegistryAgents] = useState<RegistryAgent[]>([])
-  const [agentRuntime, setAgentRuntime] = useState<Record<string, AgentRuntime>>({})
-  const [ttlMinutes, setTtlMinutes] = useState<number>(15)
+  const [tab, setTab] = useState<Tab>('overview')
+  const [agents, setAgents] = useState<Agent[]>([])
+  const [assets, setAssets] = useState<Asset[]>([])
+  const [connections, setConnections] = useState<Connection[]>([])
+  const [diffs, setDiffs] = useState<DiffEvent[]>([])
+  const [selectedAssetIp, setSelectedAssetIp] = useState<string>('')
+  const [assetLabel, setAssetLabel] = useState<string>('')
+  const [assetRole, setAssetRole] = useState<string>('Unknown')
+  const [assetCriticality, setAssetCriticality] = useState<string>('normal')
+  const [ttlMinutes, setTtlMinutes] = useState<number>(30)
   const [tokenInfo, setTokenInfo] = useState<TokenIssueResponse | null>(null)
 
-  const text = textMap[locale]
-  const connectedAgents = useMemo(() => registryAgents.filter((agent) => agent.status === 'connected'), [registryAgents])
-  const totalPackets = useMemo(
-    () => connectedAgents.reduce((sum, agent) => sum + (agentRuntime[agent.id]?.packetCount ?? 0), 0),
-    [connectedAgents, agentRuntime],
-  )
+  const connectedAgents = useMemo(() => agents.filter((agent) => agent.status === 'connected').length, [agents])
+  const totalPackets = useMemo(() => agents.reduce((sum, agent) => sum + agent.total_packets, 0), [agents])
+  const totalBandwidth = useMemo(() => connections.reduce((sum, connection) => sum + connection.bytes_per_sec, 0), [connections])
 
-  const visibleConnections = useMemo(
-    () => (showSelfLoops ? liveConnections : liveConnections.filter((connection) => connection.source !== connection.target)),
-    [liveConnections, showSelfLoops],
-  )
-  const selectedConnection = useMemo(() => visibleConnections[0], [visibleConnections])
+  const assetMap = useMemo(() => {
+    const map = new Map<string, Asset>()
+    assets.forEach((asset) => map.set(asset.ip, asset))
+    return map
+  }, [assets])
 
-  const agentStatusText = `${connectedAgents.length}/${registryAgents.length} ${text.connectedAgents} (${totalPackets} ${text.packets})`
+  const graphElements = useMemo(() => {
+    const nodeSet = new Set<string>()
+    const nodes = assets.map((asset) => {
+      nodeSet.add(asset.ip)
+      return {
+        data: {
+          id: asset.ip,
+          label: asset.label?.trim() ? `${asset.label} (${asset.ip})` : asset.ip,
+          role: asset.role,
+        },
+      }
+    })
+
+    const edges = connections.map((connection) => {
+      nodeSet.add(connection.src_ip)
+      nodeSet.add(connection.dst_ip)
+      return {
+        data: {
+          id: connection.connection_key,
+          source: connection.src_ip,
+          target: connection.dst_ip,
+          label: `${connection.protocol}:${connection.port}`,
+        },
+      }
+    })
+
+    for (const ip of nodeSet) {
+      if (nodes.find((node) => node.data.id === ip)) continue
+      nodes.push({ data: { id: ip, label: ip, role: 'Unknown' } })
+    }
+
+    return [...nodes, ...edges]
+  }, [assets, connections])
+
+  const selectedAsset = useMemo(() => assets.find((asset) => asset.ip === selectedAssetIp) ?? null, [assets, selectedAssetIp])
 
   useEffect(() => {
-    if (mode !== 'live') return
+    if (!selectedAsset) return
+    setAssetLabel(selectedAsset.label ?? '')
+    setAssetRole(selectedAsset.role)
+    setAssetCriticality(selectedAsset.criticality)
+  }, [selectedAsset])
 
-    let socket: WebSocket | null = null
-    try {
-      socket = new WebSocket(REGISTRY_WS_URL)
-      socket.onmessage = (event) => {
-        const parsed = JSON.parse(event.data as string) as AgentMessage
+  useEffect(() => {
+    const loadSnapshot = async () => {
+      const response = await fetch(`${REGISTRY_HTTP_URL}/api/topology/snapshot`)
+      if (!response.ok) return
+      const payload = (await response.json()) as SnapshotPayload
+      setAgents(payload.agents)
+      setAssets(payload.assets)
+      setConnections(payload.connections)
+      setDiffs(payload.diffs)
+      if (payload.assets.length > 0) {
+        setSelectedAssetIp((previous) => previous || payload.assets[0].ip)
+      }
+    }
 
-        if (parsed.type === 'registry_snapshot') {
-          setRegistryAgents(parsed.payload.agents.map((agent) => ({ id: agent.agent_id, name: agent.agent_name, status: agent.status })))
-          const runtime: Record<string, AgentRuntime> = {}
-          parsed.payload.agents.forEach((agent) => {
-            runtime[agent.agent_id] = { state: agent.status, packetCount: agent.total_packets, lastHeartbeat: agent.last_seen }
-          })
-          setAgentRuntime(runtime)
-          return
+    void loadSnapshot()
+
+    const socket = new WebSocket(REGISTRY_WS_URL)
+    socket.onmessage = (event) => {
+      const message = JSON.parse(event.data as string) as UiMessage
+
+      if (message.type === 'topology_snapshot') {
+        setAgents(message.payload.agents)
+        setAssets(message.payload.assets)
+        setConnections(message.payload.connections)
+        setDiffs(message.payload.diffs)
+        if (message.payload.assets.length > 0) {
+          setSelectedAssetIp((previous) => previous || message.payload.assets[0].ip)
         }
+        return
+      }
 
-        if (parsed.type === 'registry_agent_update') {
-          const payload = parsed.payload
-          setRegistryAgents((previous) => {
-            const index = previous.findIndex((agent) => agent.id === payload.agent_id)
-            const nextItem: RegistryAgent = { id: payload.agent_id, name: payload.agent_name, status: payload.status }
-            if (index === -1) return [nextItem, ...previous]
-            const next = [...previous]
-            next[index] = nextItem
-            return next
-          })
-          setAgentRuntime((previous) => ({
-            ...previous,
-            [payload.agent_id]: { state: payload.status, packetCount: payload.total_packets, lastHeartbeat: payload.last_seen },
-          }))
-          return
-        }
-
-        if (parsed.type !== 'connection_update') return
-        const payload = parsed.payload
-        const id = `${payload.agent_id}:${payload.connection_id}`
-        const nextConnection: Connection = {
-          id,
-          source: payload.src_ip,
-          target: payload.dst_ip,
-          agentId: payload.agent_id,
-          agentName: payload.agent_name,
-          protocol: payload.protocol,
-          port: payload.port,
-          confidence: Math.max(45, Math.min(99, Math.floor(55 + Math.log10(payload.packets + 1) * 20))),
-          basis: 'passive',
-          status: payload.packets > 20 ? 'confirmed' : 'unverified',
-          bandwidthKbps: Math.max(1, Math.round((payload.bytes_per_sec * 8) / 1000)),
-          lastSeen: payload.last_seen,
-        }
-
-        setLiveConnections((previous) => {
-          const index = previous.findIndex((connection) => connection.id === id)
-          if (index === -1) return [nextConnection, ...previous].slice(0, 500)
+      if (message.type === 'registry_agent_update') {
+        setAgents((previous) => {
+          const index = previous.findIndex((agent) => agent.agent_id === message.payload.agent_id)
+          if (index === -1) return [message.payload, ...previous]
           const next = [...previous]
-          next[index] = nextConnection
+          next[index] = message.payload
           return next
         })
-
-        setDiffEvents((events) => [
-          {
-            id: `${id}-${Date.now()}`,
-            timestamp: new Date().toLocaleTimeString(locale === 'ja' ? 'ja-JP' : 'en-US'),
-            connectionId: id,
-            message: `[${payload.agent_name}] ${payload.protocol} ${payload.src_ip} → ${payload.dst_ip}`,
-          },
-          ...events,
-        ].slice(0, 50))
+        return
       }
-    } catch {
-      setRegistryAgents([])
+
+      if (message.type === 'connection_update') {
+        const payload = message.payload
+        const key = `${payload.src_ip}|${payload.dst_ip}|${payload.protocol}|${payload.port}`
+        const nextConnection: Connection = {
+          connection_key: key,
+          connection_id: payload.connection_id,
+          src_ip: payload.src_ip,
+          dst_ip: payload.dst_ip,
+          protocol: payload.protocol,
+          port: payload.port,
+          packets: payload.packets,
+          bytes_per_sec: payload.bytes_per_sec,
+          first_seen: payload.last_seen,
+          last_seen: payload.last_seen,
+          last_agent_id: payload.agent_id,
+          last_agent_name: payload.agent_name,
+        }
+        setConnections((previous) => {
+          const index = previous.findIndex((connection) => connection.connection_key === key)
+          if (index === -1) return [nextConnection, ...previous].slice(0, 3000)
+          const next = [...previous]
+          next[index] = { ...previous[index], ...nextConnection, first_seen: previous[index].first_seen }
+          return next
+        })
+        return
+      }
+
+      if (message.type === 'connection_diff') {
+        setDiffs((previous) => [message.payload, ...previous].slice(0, 500))
+      }
     }
 
     return () => {
-      if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) socket.close()
+      if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+        socket.close()
+      }
     }
-  }, [mode, locale])
+  }, [])
+
+  const saveAsset = async () => {
+    if (!selectedAssetIp) return
+    const response = await fetch(`${REGISTRY_HTTP_URL}/api/assets/${encodeURIComponent(selectedAssetIp)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ label: assetLabel, role: assetRole, criticality: assetCriticality }),
+    })
+    if (!response.ok) return
+    const payload = (await response.json()) as { asset: Asset }
+    setAssets((previous) => previous.map((item) => (item.ip === payload.asset.ip ? payload.asset : item)))
+  }
 
   const issueToken = async () => {
     const response = await fetch(`${REGISTRY_HTTP_URL}/api/tokens`, {
@@ -280,121 +262,153 @@ function App() {
   }
 
   const configCommand = tokenInfo
-    ? `python agent.py config --registry-url "${tokenInfo.registry_http_url}" --agent-name "my-agent" --token "${tokenInfo.token}"`
+    ? `python agent.py config --registry-url "${tokenInfo.registry_http_url}" --agent-name "line-a-agent" --token "${tokenInfo.token}"`
     : ''
 
   const runCommand = 'python agent.py run'
   const installCommand = 'python agent.py install-service'
 
-  const menuItems: Array<{ key: MenuTab; label: string }> = [
-    { key: 'overview', label: text.menuOverview },
-    { key: 'agents', label: text.menuAgents },
-    { key: 'settings', label: text.menuSettings },
-  ]
-
   return (
     <div className="app">
-      <header className="header">
-        <div><h1>FLEX</h1><p>{text.appSubtitle}</p></div>
-        <span className="badge">{text.input}: {mode === 'mock' ? text.mockData : text.realPacketStream}</span>
+      <header className="header card">
+        <div>
+          <h1>FLEX</h1>
+          <p>Factory topology discovery for unknown equipment networks</p>
+        </div>
+        <div className="kpi-grid">
+          <div className="kpi-item"><span>Agents</span><strong>{connectedAgents}/{agents.length}</strong></div>
+          <div className="kpi-item"><span>Assets</span><strong>{assets.length}</strong></div>
+          <div className="kpi-item"><span>Flows</span><strong>{connections.length}</strong></div>
+          <div className="kpi-item"><span>Packets</span><strong>{totalPackets.toLocaleString()}</strong></div>
+          <div className="kpi-item"><span>Throughput</span><strong>{Math.round((totalBandwidth * 8) / 1000)} kbps</strong></div>
+        </div>
       </header>
 
-      <div className="layout-shell">
-        <aside className="card menu-card">
-          <h2>{text.menu}</h2>
-          <div className="menu-list">
-            {menuItems.map((item) => (
-              <button key={item.key} type="button" className={`menu-button ${activeMenu === item.key ? 'active' : ''}`} onClick={() => setActiveMenu(item.key)}>{item.label}</button>
-            ))}
-          </div>
-          <div className="agent-status">{text.agent}: {agentStatusText}</div>
-        </aside>
+      <nav className="tab-nav card">
+        <button type="button" className={tab === 'overview' ? 'active' : ''} onClick={() => setTab('overview')}>Overview</button>
+        <button type="button" className={tab === 'assets' ? 'active' : ''} onClick={() => setTab('assets')}>Assets</button>
+        <button type="button" className={tab === 'events' ? 'active' : ''} onClick={() => setTab('events')}>Events</button>
+        <button type="button" className={tab === 'onboarding' ? 'active' : ''} onClick={() => setTab('onboarding')}>Onboarding</button>
+      </nav>
 
-        <main className="main-panel">
-          {activeMenu === 'settings' ? (
-            <section className="card control-card resizable-card">
-              <h2>Settings</h2>
-              <div className="controls">
-                <label>{text.language}
-                  <select value={locale} onChange={(event) => setLocale(event.target.value as Locale)}>
-                    <option value="ja">日本語</option><option value="en">English</option>
+      {tab === 'overview' ? (
+        <section className="card">
+          <h2>Network Topology</h2>
+          <CytoscapeComponent
+            elements={graphElements}
+            style={{ width: '100%', height: '62vh' }}
+            layout={{ name: 'cose', fit: true, padding: 40, animate: false }}
+            stylesheet={[
+              { selector: 'node', style: { label: 'data(label)', 'background-color': '#334155', color: '#e2e8f0', 'font-size': 10 } },
+              { selector: 'edge', style: { width: 2, label: 'data(label)', 'curve-style': 'bezier', 'line-color': '#64748b', color: '#cbd5e1', 'font-size': 9 } },
+            ]}
+          />
+        </section>
+      ) : null}
+
+      {tab === 'assets' ? (
+        <section className="assets-layout">
+          <section className="card">
+            <h2>Asset Registry</h2>
+            <table className="table">
+              <thead><tr><th>IP</th><th>Label</th><th>Role</th><th>Criticality</th><th>Last Seen</th></tr></thead>
+              <tbody>
+                {assets.length === 0 ? <tr><td colSpan={5}>No assets yet</td></tr> : assets.map((asset) => (
+                  <tr key={asset.ip} className={asset.ip === selectedAssetIp ? 'selected' : ''} onClick={() => setSelectedAssetIp(asset.ip)}>
+                    <td>{asset.ip}</td>
+                    <td>{asset.label || '-'}</td>
+                    <td>{asset.role}</td>
+                    <td>{asset.criticality}</td>
+                    <td>{new Date(asset.last_seen).toLocaleString()}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </section>
+
+          <section className="card">
+            <h2>Asset Detail</h2>
+            {selectedAsset ? (
+              <div className="form-grid">
+                <label>IP<input value={selectedAsset.ip} readOnly /></label>
+                <label>Name<input value={assetLabel} onChange={(event) => setAssetLabel(event.target.value)} placeholder="Line-A PLC" /></label>
+                <label>Role<input value={assetRole} onChange={(event) => setAssetRole(event.target.value)} /></label>
+                <label>Criticality
+                  <select value={assetCriticality} onChange={(event) => setAssetCriticality(event.target.value)}>
+                    <option value="normal">normal</option>
+                    <option value="high">high</option>
+                    <option value="critical">critical</option>
                   </select>
                 </label>
-                <label>{text.mode}
-                  <select value={mode} onChange={(event) => setMode(event.target.value as InputMode)}>
-                    <option value="live">{text.livePacketAgent}</option>
-                    <option value="mock">{text.mockData}</option>
-                  </select>
-                </label>
-                <label className="checkbox-label"><input type="checkbox" checked={showSelfLoops} onChange={(event) => setShowSelfLoops(event.target.checked)} />{text.showSelfLoop}</label>
+                <label>Source Agent<input value={selectedAsset.last_agent_id ?? '-'} readOnly /></label>
+                <button type="button" onClick={saveAsset}>Save</button>
               </div>
-            </section>
+            ) : <p>Select asset from table</p>}
+          </section>
+
+          <section className="card">
+            <h2>Current Flows</h2>
+            <table className="table">
+              <thead><tr><th>Path</th><th>Protocol</th><th>PPS</th><th>Agent</th><th>Last Seen</th></tr></thead>
+              <tbody>
+                {connections.length === 0 ? <tr><td colSpan={5}>No flow data</td></tr> : connections.slice(0, 200).map((connection) => (
+                  <tr key={connection.connection_key}>
+                    <td>{assetMap.get(connection.src_ip)?.label || connection.src_ip} → {assetMap.get(connection.dst_ip)?.label || connection.dst_ip}</td>
+                    <td>{connection.protocol}:{connection.port}</td>
+                    <td>{Math.round(connection.bytes_per_sec)}</td>
+                    <td>{connection.last_agent_name}</td>
+                    <td>{new Date(connection.last_seen).toLocaleString()}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </section>
+        </section>
+      ) : null}
+
+      {tab === 'events' ? (
+        <section className="card">
+          <h2>Topology Diff Events</h2>
+          <table className="table">
+            <thead><tr><th>Time</th><th>Type</th><th>Message</th><th>Agent</th></tr></thead>
+            <tbody>
+              {diffs.length === 0 ? <tr><td colSpan={4}>No diff events</td></tr> : diffs.map((diff) => (
+                <tr key={`${diff.connection_key}-${diff.created_at}-${diff.id ?? 0}`}>
+                  <td>{new Date(diff.created_at).toLocaleString()}</td>
+                  <td>{diff.event_type}</td>
+                  <td>{diff.message}</td>
+                  <td>{diff.agent_id}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+      ) : null}
+
+      {tab === 'onboarding' ? (
+        <section className="card onboarding-grid">
+          <h2>Agent Onboarding</h2>
+          <div className="form-grid">
+            <label>Token TTL (minutes)
+              <input type="number" min={1} max={1440} value={ttlMinutes} onChange={(event) => setTtlMinutes(Number(event.target.value) || 30)} />
+            </label>
+            <button type="button" onClick={issueToken}>Issue token</button>
+          </div>
+
+          {tokenInfo ? (
+            <div className="onboarding-result">
+              <label>Enrollment token<textarea rows={3} readOnly value={tokenInfo.token} /></label>
+              <div className="action-row">
+                <a href={tokenInfo.download.windows} target="_blank" rel="noreferrer">Download Windows bundle</a>
+                <a href={tokenInfo.download.linux} target="_blank" rel="noreferrer">Download Linux bundle</a>
+              </div>
+              <label>Config command<textarea rows={3} readOnly value={configCommand} /></label>
+              <label>Run command<textarea rows={2} readOnly value={runCommand} /></label>
+              <label>Install service command<textarea rows={2} readOnly value={installCommand} /></label>
+            </div>
           ) : null}
-
-          {activeMenu === 'agents' ? (
-            <section className="card agent-manager-card resizable-card">
-              <h2>{text.agentManager}</h2>
-              <table className="agent-table">
-                <thead><tr><th>Name</th><th>Status</th><th>{text.packets}</th></tr></thead>
-                <tbody>
-                  {registryAgents.length === 0 ? <tr><td colSpan={3}>{text.noAgents}</td></tr> : registryAgents.map((agent) => (
-                    <tr key={agent.id}><td>{agent.name}</td><td>{agent.status}</td><td>{agentRuntime[agent.id]?.packetCount ?? 0}</td></tr>
-                  ))}
-                </tbody>
-              </table>
-
-              <section className="card onboarding-card">
-                <h2>{text.issueToken}</h2>
-                <div className="onboarding-form">
-                  <label>{text.tokenTtlMinutes}<input type="number" min={1} max={1440} value={ttlMinutes} onChange={(e) => setTtlMinutes(Number(e.target.value) || 15)} /></label>
-                  <button type="button" onClick={issueToken}>{text.generateToken}</button>
-                </div>
-
-                {tokenInfo ? (
-                  <div className="onboarding-result">
-                    <label>{text.enrollmentToken}<textarea readOnly rows={3} value={tokenInfo.token} /></label>
-                    <div className="onboarding-actions">
-                      <a href={tokenInfo.download.windows} target="_blank" rel="noreferrer">{text.windowsBundle}</a>
-                      <a href={tokenInfo.download.linux} target="_blank" rel="noreferrer">{text.linuxBundle}</a>
-                    </div>
-                    <label>{text.terminalConfig}<textarea readOnly rows={4} value={configCommand} /></label>
-                    <label>{text.heartbeatStart}<textarea readOnly rows={2} value={runCommand} /></label>
-                    <label>{text.serviceInstall}<textarea readOnly rows={2} value={installCommand} /></label>
-                    <div className="onboarding-actions">
-                      <button type="button" onClick={() => { void navigator.clipboard.writeText(configCommand) }}>{text.copy} ({text.configCommand})</button>
-                      <button type="button" onClick={() => { void navigator.clipboard.writeText(runCommand) }}>{text.copy} ({text.runCommand})</button>
-                      <button type="button" onClick={() => { void navigator.clipboard.writeText(installCommand) }}>{text.copy} ({text.installCommand})</button>
-                    </div>
-                  </div>
-                ) : null}
-              </section>
-            </section>
-          ) : null}
-
-          {activeMenu === 'overview' ? (
-            <>
-              <section className="top-grid">
-                <div className="card graph-card resizable-card">
-                  <h2>{text.equipmentConnectivityMap}</h2>
-                  <CytoscapeComponent
-                    elements={visibleConnections.map((connection) => ({ data: { id: connection.id, source: connection.source, target: connection.target, label: `${connection.protocol}:${connection.port}` } }))}
-                    style={{ width: '100%', height: 'clamp(420px, 56vh, 760px)' }}
-                    layout={{ name: 'cose', fit: true, padding: 40, animate: false }}
-                  />
-                </div>
-                <div className="card detail-card resizable-card">
-                  <h2>{text.connectionDetails}</h2>
-                  {selectedConnection ? <div>{selectedConnection.source} → {selectedConnection.target}</div> : <p>{text.waitingPacketEvents}</p>}
-                </div>
-              </section>
-              <section className="card diff-card resizable-card">
-                <h2>{text.connectionDiffFeed}</h2>
-                <table><tbody>{diffEvents.slice(0, 20).map((event) => <tr key={event.id}><td>{event.timestamp}</td><td>{event.message}</td></tr>)}</tbody></table>
-              </section>
-            </>
-          ) : null}
-        </main>
-      </div>
+        </section>
+      ) : null}
     </div>
   )
 }

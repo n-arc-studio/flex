@@ -1,175 +1,92 @@
 # FLEX
 
-Factory Link Explorer (FLEX) の可視化アプリです。GitHub Actions self-hosted runnerに近い運用で、`トークン発行 -> Agent一式ダウンロード -> 端末でconfig -> ハートビート収集 -> サービス自動登録` を行えます。
+Factory Link Explorer (FLEX) は、未知の工場ネットワークを受動観測して、設備接続のトポロジを可視化するツールです。
+
+今回の実装で以下を追加しました。
+
+- Agent Registry に SQLite 永続化を追加（再起動後も資産/接続/差分を保持）
+- 接続差分イベント（新規フロー検出）を保存/配信
+- 資産台帳（ラベル/役割/重要度）の編集 API
+- UI を `Overview / Assets / Events / Onboarding` の運用向け構成に刷新
 
 ## 構成
 
-- `src/` : React + Cytoscape の可視化UI
-- `packet-agent/agent.py` : 実パケットを収集してWebSocket配信するエージェント
+- `src/` : React + Cytoscape の可視化 UI
+- `agent-registry/registry.py` : Agent Registry（API + WS + SQLite）
+- `packet-agent/agent.py` : パケット取得エージェント
 
-## 1) UI起動
-
-```bash
-npm install
-npm run dev
-```
-
-画面: `http://localhost:5173`
-
-## Dockerで同時起動（Frontend + Registry）
-
-### 起動
+## 起動
 
 ```bash
 docker compose up --build
 ```
 
 - Frontend: `http://localhost:5173`
-- Agent Registry API: `http://localhost:8780`
-- Agent Registry WS(UI): `ws://localhost:8780/ws/ui`
-- Agent Registry WS(Agent): `ws://localhost:8780/ws/agent`
+- Registry API: `http://localhost:8780`
+- Registry WS(UI): `ws://localhost:8780/ws/ui`
+- Registry WS(Agent): `ws://localhost:8780/ws/agent`
 
-必要なら `.env.example` を `.env` にコピーして値を調整します。
+Registry は `flex-registry-data` volume に `flex.db` を保存します。
 
-```bash
-copy .env.example .env
-```
+## UI
 
-カスタムポートやIPペアでプロトコル名を上書きしたい場合は `.env` に以下を設定できます。
+### Overview
+- 現在観測中の接続トポロジをグラフ表示
+- Agent数/設備数/フロー数/パケット数/帯域の KPI 表示
 
-```dotenv
-FLEX_PROTOCOL_PORT_MAP=OPC UA:62557,MyProto:12000
-FLEX_ENDPOINT_PROTOCOL_MAP=192.168.1.50-192.168.1.100:OPC UA
-FLEX_AGENT_ID=agent-docker
-FLEX_AGENT_NAME=Docker Packet Agent
-```
+### Assets
+- 資産台帳（IP、ラベル、役割、重要度、最終観測時刻）
+- 資産の手動メタデータ編集（ラベル、役割、重要度）
+- 現在のフロー一覧
 
-### 停止
+### Events
+- 差分イベント一覧（新規フロー検出）
 
-```bash
-docker compose down
-```
+### Onboarding
+- トークン発行
+- Windows/Linux バンドルダウンロード
+- `config` / `run` / `install-service` コマンド提示
 
-## 2) Self-hosted風オンボーディング
+## Agent Onboarding
 
-### ① トークン発行
-
-- UIの `Agents + Onboarding` で `トークン発行` を実行
-
-### ② エージェント一式ダウンロード
-
-- Windows: `http://localhost:8780/api/download/windows`
-- Linux: `http://localhost:8780/api/download/linux`
-
-### ③ 端末でコンフィグ実施（トークン入力）
+1. UI の `Onboarding` でトークン発行
+2. バンドルをダウンロード
+3. エージェント側で設定
 
 ```bash
-python agent.py config --registry-url "http://localhost:8780" --agent-name "line-a-agent"
+python agent.py config --registry-url "http://localhost:8780" --agent-name "line-a-agent" --token "<token>"
 ```
 
-実行中にトークン入力を求められるので、UIで発行したトークンを貼り付けます。
-
-### ④ ハートビート収集開始
+4. 収集開始
 
 ```bash
 python agent.py run
 ```
 
-AgentがRegistryへ自発接続し、Heartbeat/Connection Updateを送信します。
-
-### ⑤ 自動サービス登録
+5. サービス登録（任意）
 
 ```bash
 python agent.py install-service
 ```
 
-- Windows: `FLEXAgent` サービスを `sc.exe` で作成
-- Linux: `systemd` ユニットを作成して `enable --now`
+## 主要 API
 
-## 3) 旧来の直接起動（互換）
+- `POST /api/tokens` : Enrollment token 発行
+- `POST /api/register` : Agent 登録
+- `GET /api/topology/snapshot` : 既知の Agent/Asset/Connection/Diff 一括取得
+- `GET /api/assets` : 資産一覧
+- `PATCH /api/assets/{ip}` : 資産メタデータ更新
+- `GET /api/diffs` : 差分イベント取得
 
-### 前提
+## 永続化対象
 
-- Python 3.10+
-- Windowsでは Npcap（WinPcap互換）
-- パケット取得権限（管理者実行推奨）
+- Agents
+- Assets（台帳）
+- Connections（最新状態）
+- Diff Events（差分履歴）
+- Enrollment Tokens（有効期限付き）
 
-### セットアップ
+## 注意事項
 
-```bash
-cd packet-agent
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-```
-
-### 起動
-
-```bash
-python agent.py --host 127.0.0.1 --port 8765
-
-# エージェント識別情報を指定（推奨）
-python agent.py --host 127.0.0.1 --port 8765 --agent-id line-a --agent-name "Line A Sensor"
-```
-
-必要に応じてインターフェース指定:
-
-```bash
-python agent.py --iface "Ethernet" --bpf "tcp or udp"
-```
-
-保存先（既定）:
-
-- Windows: `C:\ProgramData\FLEX\agent-config.json`
-- Linux/macOS: `~/.config/flex/agent-config.json`
-
-補足:
-
-- `python agent.py` は `python agent.py run` と同義です
-- `python agent.py register` は `python agent.py config` のエイリアスです
-
-## 4) 複数エージェント管理（一覧）
-
-- AgentはRegistryへ自発接続（GitHub runner型）
-- UIはRegistryの状態を一覧表示（URL入力・手動Reconnect不要）
-- `Agents + Onboarding` タブでトークン発行、Windows/Linuxダウンロード、コマンド表示
-- 接続詳細にどのエージェント由来か (`Source Agent`) を表示
-
-## 注意事項（Windows + Docker）
-
-- Windows上のDocker Desktopコンテナから、ホストの物理NICを直接スニッフィングできない場合があります。
-- 実ネットワーク（SPAN/TAP）のパケット取得が必要な場合は、以下のどちらかを推奨します。
-  - Linuxホストで`packet-agent`コンテナを実行
-  - Windowsでは`packet-agent`をホストで直接実行し、FrontendのみDockerで実行
-
-## エージェントが送るイベント形式
-
-`hello` / `heartbeat` は `agent_id` と `agent_name` を含めます。
-
-```json
-{
-  "type": "hello",
-  "payload": {
-    "message": "FLEX packet agent connected",
-    "timestamp": "2026-02-20T14:22:10Z",
-    "agent_id": "line-a",
-    "agent_name": "Line A Sensor"
-  }
-}
-```
-
-```json
-{
-  "type": "connection_update",
-  "payload": {
-    "connection_id": "a1b2c3d4e5f6",
-    "src_ip": "192.168.10.11",
-    "dst_ip": "192.168.10.21",
-    "protocol": "Modbus/TCP",
-    "port": 502,
-    "packets": 182,
-    "bytes_per_sec": 1468.5,
-    "last_seen": "2026-02-20T14:22:10Z"
-  }
-}
-```
+- Windows の Docker Desktop コンテナから物理 NIC の直接スニッフィングが難しい場合があります。
+- 実ネットワークの観測は、Linux ホストの agent 実行、または Windows ホストで `packet-agent` 直接実行を推奨します。

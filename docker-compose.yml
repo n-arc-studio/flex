@@ -16,3 +16,10 @@ services:
       dockerfile: agent-registry/Dockerfile
     ports:
       - "8780:8780"
+    environment:
+      - FLEX_DB_PATH=/data/flex.db
+    volumes:
+      - flex-registry-data:/data
+
+volumes:
+  flex-registry-data:
