@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build
+        run: npm run build
+
+  registry-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r agent-registry/requirements.txt
+
+      - name: Run unittests
+        env:
+          FLEX_ADMIN_PASSWORD: RegressionAdmin#2026
+        run: python -m unittest discover -s agent-registry/tests -p "test_*.py"
+
+  packet-agent-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r packet-agent/requirements.txt
+
+      - name: Run unittests
+        run: python -m unittest discover -s packet-agent/tests -p "test_*.py"
+
+  e2e-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start stack
+        env:
+          FLEX_ADMIN_PASSWORD: RegressionAdmin#2026
+        run: |
+          docker compose up -d --build
+          docker compose ps
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: E2E smoke
+        env:
+          REGISTRY_HTTP_URL: http://localhost:8780
+          FRONTEND_URL: http://localhost:5173
+          ADMIN_USERNAME: admin
+          ADMIN_PASSWORD: RegressionAdmin#2026
+          ADMIN_PASSWORD_NEW: RegressionAdminChanged#2026
+        run: node scripts/e2e_smoke.mjs
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

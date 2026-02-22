@@ -21,6 +21,11 @@ Factory Link Explorer (FLEX) は、未知の工場ネットワークを受動観
 docker compose up --build
 ```
 
+初回起動（DBが空の状態）では管理者初期パスワードが必要です（12文字以上）。
+
+- Bash: `FLEX_ADMIN_PASSWORD='YourStrongPasswordHere' docker compose up --build`
+- PowerShell: `$env:FLEX_ADMIN_PASSWORD='YourStrongPasswordHere'; docker compose up --build`
+
 - Frontend: `http://localhost:5173`
 - Registry API: `http://localhost:8780`
 - Registry WS(UI): `ws://localhost:8780/ws/ui`
@@ -99,9 +104,25 @@ python agent.py install-service
 python -m unittest discover -s agent-registry/tests -p "test_*.py"
 ```
 
+Packet Agent のユニットテスト（プロトコル推定、集計ロジック、エビクション等）:
+
+```bash
+python -m unittest discover -s packet-agent/tests -p "test_*.py"
+```
+
 Docker で実行する場合（依存関係込みで確実）:
 
 ```bash
 docker compose build agent-registry
 docker compose run --rm agent-registry python -m unittest discover -s /app/tests -p "test_*.py"
+```
+
+## E2Eスモーク（最小）
+
+Docker Compose で起動して、health/login/snapshot/register の一連が通るかをチェックします。
+
+```bash
+FLEX_ADMIN_PASSWORD='RegressionAdmin#2026' docker compose up -d --build
+ADMIN_PASSWORD='RegressionAdmin#2026' ADMIN_PASSWORD_NEW='RegressionAdminChanged#2026' node scripts/e2e_smoke.mjs
+docker compose down -v
 ```

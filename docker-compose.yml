@@ -18,6 +18,7 @@ services:
       - "8780:8780"
     environment:
       - FLEX_DB_PATH=/data/flex.db
+      - FLEX_ADMIN_PASSWORD=${FLEX_ADMIN_PASSWORD:-}
     volumes:
       - flex-registry-data:/data
 

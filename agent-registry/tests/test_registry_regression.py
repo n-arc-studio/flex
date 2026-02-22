@@ -106,6 +106,32 @@ class RegistryRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('agents', body)
         self.assertIn('connections', body)
 
+    async def test_health_endpoint_is_public(self):
+        response = await self.client.get('/api/health')
+        self.assertEqual(response.status, 200)
+        payload = await response.json()
+        self.assertEqual(payload.get('status'), 'ok')
+        self.assertTrue(payload.get('timestamp'))
+
+    async def test_register_rejects_expired_enrollment_token(self):
+        headers = await self._auth_headers()
+        issue = await self.client.post('/api/tokens', headers=headers, json={'ttl_minutes': 1})
+        self.assertEqual(issue.status, 200)
+        token_payload = await issue.json()
+        token = token_payload['token']
+
+        # Force-expire the token in DB to avoid sleeps in tests
+        state = self.server.app['state']
+        state.execute('UPDATE tokens SET expires_at = ? WHERE token = ?', (int(time.time()) - 1, token))
+
+        register_res = await self.client.post(
+            '/api/register',
+            json={'token': token, 'agent_name': 'expired-token-agent', 'hostname': 'test-host', 'platform': 'win'},
+        )
+        self.assertEqual(register_res.status, 400)
+        body = await register_res.json()
+        self.assertEqual(body.get('error'), 'token expired')
+
     async def test_ws_hello_preserves_agent_ws_token(self):
         registered = await self._register_agent('token-preserve-agent')
         upstream_url = registered['upstream_url']
