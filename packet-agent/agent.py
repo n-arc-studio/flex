@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import hashlib
+import ipaddress
 import json
 import os
 import platform
@@ -95,6 +96,38 @@ class ConnectionStat:
     last_seen: float = 0.0
 
 
+class ReverseDnsResolver:
+    def __init__(self, enabled: bool) -> None:
+        self.enabled = enabled
+        self._cache: Dict[str, Optional[str]] = {}
+        self._lock = threading.Lock()
+
+    def _is_candidate(self, ip: str) -> bool:
+        if ip == '255.255.255.255':
+            return False
+        try:
+            parsed = ipaddress.ip_address(ip)
+        except ValueError:
+            return False
+        if parsed.is_loopback or parsed.is_multicast:
+            return False
+        return parsed.is_private or parsed.is_link_local
+
+    def resolve(self, ip: str) -> Optional[str]:
+        if not self.enabled or not self._is_candidate(ip):
+            return None
+        with self._lock:
+            if ip in self._cache:
+                return self._cache[ip]
+        try:
+            host = socket.gethostbyaddr(ip)[0]
+        except Exception:
+            host = None
+        with self._lock:
+            self._cache[ip] = host
+        return host
+
+
 def infer_protocol(port: int, l4_protocol: str, protocol_port_map: Dict[int, str]) -> str:
     if port in protocol_port_map:
         return protocol_port_map[port]
@@ -107,6 +140,7 @@ class PacketAggregator:
         idle_timeout_seconds: int = 120,
         protocol_port_map: Optional[Dict[int, str]] = None,
         endpoint_protocol_map: Optional[Dict[frozenset[str], str]] = None,
+        rdns_resolver: Optional[ReverseDnsResolver] = None,
     ) -> None:
         self._stats: Dict[Tuple[str, str, str, int], ConnectionStat] = {}
         self._lock = threading.Lock()
@@ -114,6 +148,7 @@ class PacketAggregator:
         self._total_packets = 0
         self._protocol_port_map = protocol_port_map or dict(PROTOCOL_PORT_MAP)
         self._endpoint_protocol_map = endpoint_protocol_map or {}
+        self._rdns_resolver = rdns_resolver or ReverseDnsResolver(enabled=False)
 
     def ingest_packet(self, packet) -> None:
         if IP not in packet:
@@ -197,6 +232,8 @@ class PacketAggregator:
                         'connection_id': connection_id,
                         'src_ip': stat.src_ip,
                         'dst_ip': stat.dst_ip,
+                        'src_name': self._rdns_resolver.resolve(stat.src_ip),
+                        'dst_name': self._rdns_resolver.resolve(stat.dst_ip),
                         'protocol': stat.protocol,
                         'port': stat.port,
                         'packets': stat.packets,
@@ -434,6 +471,15 @@ def resolve_run_option(explicit_value, config: Optional[dict], config_key: str, 
     return fallback
 
 
+def resolve_agent_rdns_enabled(rdns_mode: str, upstream_url: str) -> bool:
+    mode = (rdns_mode or 'auto').strip().lower()
+    if mode in ('off', '0', 'false', 'no'):
+        return False
+    if mode in ('on', '1', 'true', 'yes'):
+        return True
+    return bool(upstream_url)
+
+
 def parse_cli_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='FLEX packet capture agent')
     subparsers = parser.add_subparsers(dest='command')
@@ -450,6 +496,7 @@ def parse_cli_args() -> argparse.Namespace:
     run_parser.add_argument('--agent-id', type=str, default=None)
     run_parser.add_argument('--agent-name', type=str, default=None)
     run_parser.add_argument('--upstream-url', type=str, default=None)
+    run_parser.add_argument('--rdns-mode', type=str, default=None, choices=['auto', 'on', 'off'])
     run_parser.add_argument('--config-path', type=str, default=default_config_path())
     run_parser.add_argument('--skip-config', action='store_true')
 
@@ -499,15 +546,19 @@ def main() -> None:
     agent_id = resolve_run_option(args.agent_id, config, 'agent_id', os.getenv('FLEX_AGENT_ID', 'agent-local'))
     agent_name = resolve_run_option(args.agent_name, config, 'agent_name', os.getenv('FLEX_AGENT_NAME', socket.gethostname()))
     upstream_url = resolve_run_option(args.upstream_url, config, 'upstream_url', os.getenv('FLEX_UPSTREAM_URL', ''))
+    rdns_mode = resolve_run_option(args.rdns_mode, config, 'rdns_mode', os.getenv('FLEX_AGENT_RDNS_MODE', 'auto'))
+    agent_rdns_enabled = resolve_agent_rdns_enabled(str(rdns_mode), str(upstream_url))
 
     protocol_port_map = dict(PROTOCOL_PORT_MAP)
     protocol_port_map.update(parse_protocol_port_map(protocol_port_map_text))
     endpoint_protocol_map = parse_endpoint_protocol_map(endpoint_protocol_map_text)
+    rdns_resolver = ReverseDnsResolver(enabled=agent_rdns_enabled)
 
     aggregator = PacketAggregator(
         idle_timeout_seconds=idle_timeout,
         protocol_port_map=protocol_port_map,
         endpoint_protocol_map=endpoint_protocol_map,
+        rdns_resolver=rdns_resolver,
     )
 
     stop_capture = threading.Event()

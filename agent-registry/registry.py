@@ -21,7 +21,7 @@ async def cors_middleware(request: web.Request, handler):
         response = await handler(request)
 
     response.headers['Access-Control-Allow-Origin'] = '*'
-    response.headers['Access-Control-Allow-Methods'] = 'GET,POST,PATCH,OPTIONS'
+    response.headers['Access-Control-Allow-Methods'] = 'GET,POST,PUT,PATCH,DELETE,OPTIONS'
     response.headers['Access-Control-Allow-Headers'] = 'Content-Type,Authorization'
     return response
 
@@ -40,7 +40,9 @@ class RegistryState:
         self.db = sqlite3.connect(db_path, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         self.lock = threading.Lock()
+        self.last_cleanup_epoch = 0
         self._init_db()
+        self._ensure_retention_settings()
 
     def _init_db(self) -> None:
         schema = '''
@@ -99,10 +101,34 @@ CREATE TABLE IF NOT EXISTS tokens (
   expires_at INTEGER NOT NULL,
   created_at INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 '''
         with self.lock:
             self.db.executescript(schema)
             self.db.commit()
+
+    def _ensure_retention_settings(self) -> None:
+        default_connection_days = str(max(1, int(os.getenv('FLEX_CONNECTION_RETENTION_DAYS', '30'))))
+        default_event_days = str(max(1, int(os.getenv('FLEX_EVENT_RETENTION_DAYS', '14'))))
+        with self.lock:
+            connection_row = self.db.execute('SELECT value FROM settings WHERE key = ?', ('connection_retention_days',)).fetchone()
+            if connection_row is None:
+                self.db.execute('INSERT INTO settings(key, value) VALUES(?, ?)', ('connection_retention_days', default_connection_days))
+            event_row = self.db.execute('SELECT value FROM settings WHERE key = ?', ('event_retention_days',)).fetchone()
+            if event_row is None:
+                self.db.execute('INSERT INTO settings(key, value) VALUES(?, ?)', ('event_retention_days', default_event_days))
+            legacy_row = self.db.execute('SELECT value FROM settings WHERE key = ?', ('packet_retention_days',)).fetchone()
+            if legacy_row is not None:
+                self.db.execute(
+                    'INSERT OR REPLACE INTO settings(key, value) VALUES(?, ?)',
+                    ('event_retention_days', legacy_row['value']),
+                )
+                self.db.execute('DELETE FROM settings WHERE key = ?', ('packet_retention_days',))
+                self.db.commit()
 
     def close(self) -> None:
         with self.lock:
@@ -122,6 +148,79 @@ CREATE TABLE IF NOT EXISTS tokens (
         with self.lock:
             self.db.execute(sql, params)
             self.db.commit()
+
+    def execute_many(self, sql: str, seq_of_params: list[tuple]) -> None:
+        with self.lock:
+            self.db.executemany(sql, seq_of_params)
+            self.db.commit()
+
+    def get_retention_policy(self) -> dict:
+        connection_days_row = self.query_one('SELECT value FROM settings WHERE key = ?', ('connection_retention_days',))
+        event_days_row = self.query_one('SELECT value FROM settings WHERE key = ?', ('event_retention_days',))
+        try:
+            connection_days = max(1, int(connection_days_row['value'])) if connection_days_row else 30
+        except (TypeError, ValueError):
+            connection_days = 30
+        try:
+            event_days = max(1, int(event_days_row['value'])) if event_days_row else 14
+        except (TypeError, ValueError):
+            event_days = 14
+        return {'connection_retention_days': connection_days, 'event_retention_days': event_days}
+
+    def set_retention_policy(self, connection_days: int | None = None, event_days: int | None = None) -> dict:
+        if connection_days is not None:
+            safe_connection_days = max(1, min(connection_days, 3650))
+            self.execute(
+                'INSERT OR REPLACE INTO settings(key, value) VALUES(?, ?)',
+                ('connection_retention_days', str(safe_connection_days)),
+            )
+        if event_days is not None:
+            safe_event_days = max(1, min(event_days, 3650))
+            self.execute(
+                'INSERT OR REPLACE INTO settings(key, value) VALUES(?, ?)',
+                ('event_retention_days', str(safe_event_days)),
+            )
+        return self.get_retention_policy()
+
+    def purge_packet_data(self, connection_days: int, event_days: int) -> dict:
+        connection_cutoff = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(time.time() - connection_days * 24 * 60 * 60))
+        event_cutoff = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(time.time() - event_days * 24 * 60 * 60))
+        with self.lock:
+            conn_deleted = self.db.execute('DELETE FROM connections WHERE last_seen < ?', (connection_cutoff,)).rowcount
+            diff_deleted = self.db.execute('DELETE FROM diff_events WHERE created_at < ?', (event_cutoff,)).rowcount
+            self.db.commit()
+        return {
+            'deleted_connections': conn_deleted,
+            'deleted_diffs': diff_deleted,
+            'connection_cutoff': connection_cutoff,
+            'event_cutoff': event_cutoff,
+        }
+
+    def clear_packet_data(self, target: str) -> dict:
+        with self.lock:
+            deleted_connections = 0
+            deleted_diffs = 0
+            if target in ('all', 'connections'):
+                deleted_connections = self.db.execute('DELETE FROM connections').rowcount
+            if target in ('all', 'diffs'):
+                deleted_diffs = self.db.execute('DELETE FROM diff_events').rowcount
+            self.db.commit()
+        return {'deleted_connections': deleted_connections, 'deleted_diffs': deleted_diffs}
+
+    def delete_selected_packet_data(self, connection_keys: list[str], diff_ids: list[int]) -> dict:
+        with self.lock:
+            deleted_connections = 0
+            deleted_diffs = 0
+            if connection_keys:
+                placeholders = ','.join(['?'] * len(connection_keys))
+                deleted_connections = self.db.execute(
+                    f'DELETE FROM connections WHERE connection_key IN ({placeholders})', tuple(connection_keys)
+                ).rowcount
+            if diff_ids:
+                placeholders = ','.join(['?'] * len(diff_ids))
+                deleted_diffs = self.db.execute(f'DELETE FROM diff_events WHERE id IN ({placeholders})', tuple(diff_ids)).rowcount
+            self.db.commit()
+        return {'deleted_connections': deleted_connections, 'deleted_diffs': deleted_diffs}
 
 
 def _infer_asset_role(protocol: str, is_source: bool) -> str:
@@ -298,7 +397,15 @@ def _load_topology_snapshot(state: RegistryState, diff_limit: int = 200) -> dict
     assets = state.query_all('SELECT * FROM assets ORDER BY last_seen DESC')
     connections = state.query_all('SELECT * FROM connections ORDER BY last_seen DESC LIMIT 2000')
     diffs = state.query_all('SELECT * FROM diff_events ORDER BY id DESC LIMIT ?', (diff_limit,))
-    return {'agents': agents, 'assets': assets, 'connections': connections, 'diffs': diffs, 'timestamp': _utc_now()}
+    retention_policy = state.get_retention_policy()
+    return {
+        'agents': agents,
+        'assets': assets,
+        'connections': connections,
+        'diffs': diffs,
+        'timestamp': _utc_now(),
+        **retention_policy,
+    }
 
 
 async def get_snapshot(request: web.Request) -> web.Response:
@@ -326,6 +433,61 @@ async def patch_asset(request: web.Request) -> web.Response:
     return web.json_response({'asset': state.query_one('SELECT * FROM assets WHERE ip = ?', (ip,))})
 
 
+async def delete_asset(request: web.Request) -> web.Response:
+    state: RegistryState = request.app['state']
+    ip = request.match_info['ip']
+    existing = state.query_one('SELECT ip FROM assets WHERE ip = ?', (ip,))
+    if not existing:
+        return web.json_response({'error': 'asset not found'}, status=404)
+    state.execute('DELETE FROM assets WHERE ip = ?', (ip,))
+    await _broadcast_ui(state, {'type': 'topology_snapshot', 'payload': _load_topology_snapshot(state)})
+    return web.json_response({'deleted_ip': ip})
+
+
+async def delete_selected_assets(request: web.Request) -> web.Response:
+    state: RegistryState = request.app['state']
+    payload = await request.json() if request.can_read_body else {}
+    ips = payload.get('ips', [])
+    if not isinstance(ips, list):
+        return web.json_response({'error': 'ips must be array'}, status=400)
+    safe_ips = [str(ip).strip() for ip in ips if str(ip).strip()]
+    if not safe_ips:
+        return web.json_response({'deleted_count': 0})
+
+    placeholders = ','.join(['?'] * len(safe_ips))
+    with state.lock:
+        deleted_count = state.db.execute(f'DELETE FROM assets WHERE ip IN ({placeholders})', tuple(safe_ips)).rowcount
+        state.db.commit()
+
+    await _broadcast_ui(state, {'type': 'topology_snapshot', 'payload': _load_topology_snapshot(state)})
+    return web.json_response({'deleted_count': deleted_count})
+
+
+async def clear_assets(request: web.Request) -> web.Response:
+    state: RegistryState = request.app['state']
+    with state.lock:
+        deleted_count = state.db.execute('DELETE FROM assets').rowcount
+        state.db.commit()
+    await _broadcast_ui(state, {'type': 'topology_snapshot', 'payload': _load_topology_snapshot(state)})
+    return web.json_response({'deleted_count': deleted_count})
+
+
+async def initialize_assets(request: web.Request) -> web.Response:
+    state: RegistryState = request.app['state']
+    with state.lock:
+        updated_count = state.db.execute(
+            """
+            UPDATE assets
+            SET label = NULL,
+                role = 'Unknown',
+                criticality = 'normal'
+            """
+        ).rowcount
+        state.db.commit()
+    await _broadcast_ui(state, {'type': 'topology_snapshot', 'payload': _load_topology_snapshot(state)})
+    return web.json_response({'initialized_count': updated_count})
+
+
 async def get_diffs(request: web.Request) -> web.Response:
     state: RegistryState = request.app['state']
     try:
@@ -334,6 +496,60 @@ async def get_diffs(request: web.Request) -> web.Response:
         limit = 200
     rows = state.query_all('SELECT * FROM diff_events ORDER BY id DESC LIMIT ?', (limit,))
     return web.json_response({'diffs': rows})
+
+
+async def get_retention_policy(request: web.Request) -> web.Response:
+    state: RegistryState = request.app['state']
+    return web.json_response(state.get_retention_policy())
+
+
+async def put_retention_policy(request: web.Request) -> web.Response:
+    state: RegistryState = request.app['state']
+    payload = await request.json() if request.can_read_body else {}
+    connection_days = None
+    event_days = None
+
+    try:
+        if 'connection_retention_days' in payload:
+            connection_days = int(payload.get('connection_retention_days'))
+        if 'event_retention_days' in payload:
+            event_days = int(payload.get('event_retention_days'))
+    except (TypeError, ValueError):
+        return web.json_response({'error': 'retention days must be integer'}, status=400)
+
+    applied = state.set_retention_policy(connection_days=connection_days, event_days=event_days)
+    cleanup = state.purge_packet_data(applied['connection_retention_days'], applied['event_retention_days'])
+    return web.json_response({**applied, 'cleanup': cleanup})
+
+
+async def clear_packets(request: web.Request) -> web.Response:
+    state: RegistryState = request.app['state']
+    payload = await request.json() if request.can_read_body else {}
+    target = str(payload.get('target', 'all')).strip().lower()
+    if target not in ('all', 'connections', 'diffs'):
+        return web.json_response({'error': 'target must be all|connections|diffs'}, status=400)
+    deleted = state.clear_packet_data(target)
+    await _broadcast_ui(state, {'type': 'topology_snapshot', 'payload': _load_topology_snapshot(state)})
+    return web.json_response({'target': target, **deleted})
+
+
+async def delete_selected_packets(request: web.Request) -> web.Response:
+    state: RegistryState = request.app['state']
+    payload = await request.json() if request.can_read_body else {}
+    connection_keys = payload.get('connection_keys', [])
+    diff_ids = payload.get('diff_ids', [])
+    if not isinstance(connection_keys, list) or not isinstance(diff_ids, list):
+        return web.json_response({'error': 'connection_keys and diff_ids must be arrays'}, status=400)
+    safe_connection_keys = [str(item) for item in connection_keys if str(item).strip()]
+    safe_diff_ids: list[int] = []
+    for item in diff_ids:
+        try:
+            safe_diff_ids.append(int(item))
+        except (TypeError, ValueError):
+            continue
+    deleted = state.delete_selected_packet_data(safe_connection_keys, safe_diff_ids)
+    await _broadcast_ui(state, {'type': 'topology_snapshot', 'payload': _load_topology_snapshot(state)})
+    return web.json_response(deleted)
 
 
 async def download_windows(_: web.Request) -> web.Response:
@@ -437,6 +653,12 @@ async def ws_agent(request: web.Request) -> web.WebSocketResponse:
                 await _broadcast_ui(state, {'type': 'registry_agent_update', 'payload': state_payload})
 
             if msg_type == 'connection_update' and bound_agent_id:
+                now_epoch = int(time.time())
+                if now_epoch - state.last_cleanup_epoch >= 60:
+                    state.last_cleanup_epoch = now_epoch
+                    policy = state.get_retention_policy()
+                    state.purge_packet_data(policy['connection_retention_days'], policy['event_retention_days'])
+
                 enriched = {
                     **payload,
                     'agent_id': bound_agent_id,
@@ -561,7 +783,15 @@ def build_app(db_path: str) -> web.Application:
     app.router.add_get('/api/topology/snapshot', get_snapshot)
     app.router.add_get('/api/assets', get_assets)
     app.router.add_patch('/api/assets/{ip}', patch_asset)
+    app.router.add_delete('/api/assets/{ip}', delete_asset)
+    app.router.add_post('/api/assets/delete-selected', delete_selected_assets)
+    app.router.add_post('/api/assets/clear', clear_assets)
+    app.router.add_post('/api/assets/initialize', initialize_assets)
     app.router.add_get('/api/diffs', get_diffs)
+    app.router.add_get('/api/retention-policy', get_retention_policy)
+    app.router.add_put('/api/retention-policy', put_retention_policy)
+    app.router.add_post('/api/packets/clear', clear_packets)
+    app.router.add_post('/api/packets/delete-selected', delete_selected_packets)
     app.router.add_get('/api/download/windows', download_windows)
     app.router.add_get('/api/download/linux', download_linux)
     app.router.add_route('OPTIONS', '/api/tokens', lambda _: web.Response(status=204))
@@ -569,7 +799,13 @@ def build_app(db_path: str) -> web.Application:
     app.router.add_route('OPTIONS', '/api/topology/snapshot', lambda _: web.Response(status=204))
     app.router.add_route('OPTIONS', '/api/assets', lambda _: web.Response(status=204))
     app.router.add_route('OPTIONS', '/api/assets/{ip}', lambda _: web.Response(status=204))
+    app.router.add_route('OPTIONS', '/api/assets/delete-selected', lambda _: web.Response(status=204))
+    app.router.add_route('OPTIONS', '/api/assets/clear', lambda _: web.Response(status=204))
+    app.router.add_route('OPTIONS', '/api/assets/initialize', lambda _: web.Response(status=204))
     app.router.add_route('OPTIONS', '/api/diffs', lambda _: web.Response(status=204))
+    app.router.add_route('OPTIONS', '/api/retention-policy', lambda _: web.Response(status=204))
+    app.router.add_route('OPTIONS', '/api/packets/clear', lambda _: web.Response(status=204))
+    app.router.add_route('OPTIONS', '/api/packets/delete-selected', lambda _: web.Response(status=204))
     app.router.add_route('OPTIONS', '/api/download/windows', lambda _: web.Response(status=204))
     app.router.add_route('OPTIONS', '/api/download/linux', lambda _: web.Response(status=204))
     app.router.add_get('/ws/ui', ws_ui)

@@ -85,6 +85,32 @@ h2 {
   color: #e2e8f0;
 }
 
+.legend-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 10px;
+  color: #cbd5e1;
+  font-size: 0.8rem;
+}
+
+.legend-row span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid #334155;
+  border-radius: 999px;
+  padding: 2px 8px;
+  background: #0b1220;
+}
+
+.legend-row i {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  display: inline-block;
+}
+
 .assets-layout {
   display: grid;
   gap: 14px;
@@ -94,6 +120,31 @@ h2 {
   width: 100%;
   border-collapse: collapse;
   font-size: 0.88rem;
+}
+
+.table-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.table-toolbar label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #94a3b8;
+  font-size: 0.82rem;
+}
+
+.table-toolbar input[type='number'] {
+  width: 110px;
+}
+
+.danger-button {
+  border-color: #7f1d1d;
+  background: #450a0a;
 }
 
 .table th,
