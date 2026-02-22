@@ -1,6 +1,6 @@
 # FLEX
 
-Factory Link Explorer (FLEX) の可視化アプリです。設備接続グラフを表示し、`Mock` と `Live` を切り替えて接続変化を確認できます。AgentはRegistryへ自発接続し、UIはRegistryを購読します（URL入力不要）。
+Factory Link Explorer (FLEX) の可視化アプリです。GitHub Actions self-hosted runnerに近い運用で、`トークン発行 -> Agent一式ダウンロード -> 端末でconfig -> ハートビート収集 -> サービス自動登録` を行えます。
 
 ## 構成
 
@@ -25,8 +25,9 @@ docker compose up --build
 ```
 
 - Frontend: `http://localhost:5173`
-- Agent Registry(UI): `ws://localhost:8780/ui`
-- Agent Registry(Agent): `ws://localhost:8780/agent`
+- Agent Registry API: `http://localhost:8780`
+- Agent Registry WS(UI): `ws://localhost:8780/ws/ui`
+- Agent Registry WS(Agent): `ws://localhost:8780/ws/agent`
 
 必要なら `.env.example` を `.env` にコピーして値を調整します。
 
@@ -49,7 +50,43 @@ FLEX_AGENT_NAME=Docker Packet Agent
 docker compose down
 ```
 
-## 2) 実パケット入力エージェント起動
+## 2) Self-hosted風オンボーディング
+
+### ① トークン発行
+
+- UIの `Agents + Onboarding` で `トークン発行` を実行
+
+### ② エージェント一式ダウンロード
+
+- Windows: `http://localhost:8780/api/download/windows`
+- Linux: `http://localhost:8780/api/download/linux`
+
+### ③ 端末でコンフィグ実施（トークン入力）
+
+```bash
+python agent.py config --registry-url "http://localhost:8780" --agent-name "line-a-agent"
+```
+
+実行中にトークン入力を求められるので、UIで発行したトークンを貼り付けます。
+
+### ④ ハートビート収集開始
+
+```bash
+python agent.py run
+```
+
+AgentがRegistryへ自発接続し、Heartbeat/Connection Updateを送信します。
+
+### ⑤ 自動サービス登録
+
+```bash
+python agent.py install-service
+```
+
+- Windows: `FLEXAgent` サービスを `sc.exe` で作成
+- Linux: `systemd` ユニットを作成して `enable --now`
+
+## 3) 旧来の直接起動（互換）
 
 ### 前提
 
@@ -81,28 +118,6 @@ python agent.py --host 127.0.0.1 --port 8765 --agent-id line-a --agent-name "Lin
 python agent.py --iface "Ethernet" --bpf "tcp or udp"
 ```
 
-## 3) UIでLive接続
-
-1. UIの `Mode` を `Live (Registry)` に変更
-2. Agent側で `register` と `run` を実行
-3. `Agents + Onboarding` タブにAgent状態が表示されれば接続完了
-
-## 3.5) MVP: Self-hosted風の登録手順
-
-GitHub Actions self-hosted runner登録に近い手順で、URL手入力なしの登録を行えます。
-
-1. UIの `エージェント登録 (MVP)` で `登録先URL` / `エージェント名` / `トークン有効期限` を設定
-2. `登録トークン生成` を押す
-3. 表示された `登録コマンド` をWindowsホストの `packet-agent` ディレクトリで実行
-4. 以降は `python agent.py run` で保存済み設定から起動
-
-例:
-
-```bash
-python agent.py register --token "flexreg.v1.xxxxx" --agent-name "line-a-agent"
-python agent.py run
-```
-
 保存先（既定）:
 
 - Windows: `C:\ProgramData\FLEX\agent-config.json`
@@ -111,13 +126,13 @@ python agent.py run
 補足:
 
 - `python agent.py` は `python agent.py run` と同義です
-- `--skip-config` を付けると保存済み設定を無視できます
+- `python agent.py register` は `python agent.py config` のエイリアスです
 
 ## 4) 複数エージェント管理（一覧）
 
 - AgentはRegistryへ自発接続（GitHub runner型）
 - UIはRegistryの状態を一覧表示（URL入力・手動Reconnect不要）
-- `Agents + Onboarding` タブで登録トークン生成と登録コマンド表示
+- `Agents + Onboarding` タブでトークン発行、Windows/Linuxダウンロード、コマンド表示
 - 接続詳細にどのエージェント由来か (`Source Agent`) を表示
 
 ## 注意事項（Windows + Docker）

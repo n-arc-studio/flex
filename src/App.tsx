@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from 'react'
 import CytoscapeComponent from 'react-cytoscapejs'
 import './App.css'
 
-type Device = { id: string; name: string; role: string; zone: string }
 type ConnectionStatus = 'confirmed' | 'unverified' | 'conflict'
 type InputMode = 'mock' | 'live'
 type Locale = 'ja' | 'en'
@@ -24,7 +23,6 @@ type Connection = {
 }
 
 type DiffEvent = { id: string; timestamp: string; connectionId: string; message: string }
-
 type AgentRuntime = { state: 'connected' | 'disconnected'; packetCount: number; lastHeartbeat: string | null }
 type RegistryAgent = { id: string; name: string; status: 'connected' | 'disconnected' }
 
@@ -53,7 +51,6 @@ type AgentMessage =
           active_connections: number
           last_seen: string
         }>
-        timestamp: string
       }
     }
   | {
@@ -63,66 +60,28 @@ type AgentMessage =
         agent_name: string
         status: 'connected' | 'disconnected'
         total_packets: number
-        active_connections: number
         last_seen: string
       }
     }
   | { type: 'connection_update'; payload: LiveConnectionPayload }
 
-type EnrollmentTokenPayload = { server_url: string; exp: number; nonce: string }
-
-const REGISTRY_WS_URL = import.meta.env.VITE_REGISTRY_WS_URL ?? 'ws://127.0.0.1:8780/ui'
-const REGISTRY_AGENT_URL = REGISTRY_WS_URL.replace(/\/ui$/, '/agent')
-
-function encodeEnrollmentToken(payload: EnrollmentTokenPayload): string {
-  const encoded = btoa(JSON.stringify(payload)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
-  return `flexreg.v1.${encoded}`
+type TokenIssueResponse = {
+  token: string
+  expires_at: number
+  registry_http_url: string
+  registry_ws_agent_url: string
+  download: { windows: string; linux: string }
 }
 
-const devices: Device[] = [
-  { id: 'plc-01', name: 'PLC-01', role: 'PLC', zone: 'Line-A' },
-  { id: 'hmi-01', name: 'HMI-01', role: 'HMI', zone: 'Line-A' },
-  { id: 'io-01', name: 'IO-01', role: 'Remote IO', zone: 'Line-A' },
-  { id: 'scada-01', name: 'SCADA-01', role: 'SCADA', zone: 'Control' },
-]
-
-const initialConnections: Connection[] = [
-  {
-    id: 'c1',
-    source: 'hmi-01',
-    target: 'plc-01',
-    agentId: 'mock-agent',
-    agentName: 'Mock Agent',
-    protocol: 'EtherNet/IP',
-    port: 44818,
-    confidence: 93,
-    basis: 'hybrid',
-    status: 'confirmed',
-    bandwidthKbps: 480,
-    lastSeen: new Date().toISOString(),
-  },
-  {
-    id: 'c2',
-    source: 'plc-01',
-    target: 'io-01',
-    agentId: 'mock-agent',
-    agentName: 'Mock Agent',
-    protocol: 'PROFINET',
-    port: 34964,
-    confidence: 88,
-    basis: 'passive',
-    status: 'confirmed',
-    bandwidthKbps: 820,
-    lastSeen: new Date().toISOString(),
-  },
-]
+const REGISTRY_HTTP_URL = import.meta.env.VITE_REGISTRY_HTTP_URL ?? 'http://127.0.0.1:8780'
+const REGISTRY_WS_URL = REGISTRY_HTTP_URL.replace(/^http/, 'ws') + '/ws/ui'
 
 const textMap = {
   ja: {
     appSubtitle: 'Factory Link Explorer',
     input: '入力',
-    mockData: 'モックデータ',
-    realPacketStream: '実パケットストリーム',
+    mockData: 'モック',
+    realPacketStream: 'Live',
     language: '言語',
     mode: 'モード',
     livePacketAgent: 'Live (Registry)',
@@ -130,48 +89,38 @@ const textMap = {
     menuOverview: 'Overview',
     menuAgents: 'Agents + Onboarding',
     menuSettings: 'Settings',
-    showSelfLoop: '自己ループを表示',
+    showSelfLoop: '自己ループ表示',
     agent: 'Agent',
     disconnected: '未接続',
     connected: '接続済み',
     packets: 'packet',
-    connectionError: '接続エラー',
     connectedAgents: '接続Agent',
     equipmentConnectivityMap: '設備接続マップ',
-    maximize: '最大化',
-    restore: '元に戻す',
     connectionDetails: '接続詳細',
-    connection: '接続',
-    protocol: 'プロトコル',
-    port: 'ポート',
-    status: '状態',
-    confidence: '信頼度',
-    evidence: '根拠',
-    bandwidth: '帯域',
-    lastSeen: '最終検知',
-    sourceAgent: '取得Agent',
-    noConnectionSelected: '接続が選択されていません。',
     connectionDiffFeed: '接続差分フィード',
-    time: '時刻',
-    change: '変更',
-    waitingPacketEvents: 'パケットイベント待機中...',
-    waitingChanges: '変更待機中...',
-    agentManager: 'Agents',
-    onboarding: 'エージェント登録 (MVP)',
+    agentManager: 'Agent一覧',
+    issueToken: '① トークン発行',
+    downloadBundle: '② エージェント一式ダウンロード',
+    terminalConfig: '③ 端末でconfig実施',
+    heartbeatStart: '④ ハートビート収集開始',
+    serviceInstall: '⑤ サービス自動登録',
     tokenTtlMinutes: 'トークン有効期限(分)',
-    generateToken: '登録トークン生成',
-    enrollmentToken: '登録トークン',
-    registerCommand: '登録コマンド',
+    generateToken: 'トークン発行',
+    enrollmentToken: 'Enrollment Token',
+    windowsBundle: 'Windows版をダウンロード',
+    linuxBundle: 'Linux版をダウンロード',
     copy: 'コピー',
-    tokenHint: 'Windowsで register を実行',
-    noAgents: '接続中のAgentはありません',
-    agentName: 'エージェント名',
+    configCommand: 'Configコマンド',
+    runCommand: 'Runコマンド',
+    installCommand: 'Service登録コマンド',
+    noAgents: '接続中のAgentなし',
+    waitingPacketEvents: 'イベント待機中...',
   },
   en: {
     appSubtitle: 'Factory Link Explorer',
     input: 'Input',
-    mockData: 'Mock Data',
-    realPacketStream: 'Real Packet Stream',
+    mockData: 'Mock',
+    realPacketStream: 'Live',
     language: 'Language',
     mode: 'Mode',
     livePacketAgent: 'Live (Registry)',
@@ -184,154 +133,59 @@ const textMap = {
     disconnected: 'Disconnected',
     connected: 'Connected',
     packets: 'packets',
-    connectionError: 'Connection Error',
     connectedAgents: 'Connected Agents',
-    equipmentConnectivityMap: 'Equipment Connectivity Map',
-    maximize: 'Maximize',
-    restore: 'Restore',
+    equipmentConnectivityMap: 'Connectivity Map',
     connectionDetails: 'Connection Details',
-    connection: 'Connection',
-    protocol: 'Protocol',
-    port: 'Port',
-    status: 'Status',
-    confidence: 'Confidence',
-    evidence: 'Evidence',
-    bandwidth: 'Bandwidth',
-    lastSeen: 'Last Seen',
-    sourceAgent: 'Source Agent',
-    noConnectionSelected: 'No connection selected.',
-    connectionDiffFeed: 'Connection Diff Feed',
-    time: 'Time',
-    change: 'Change',
-    waitingPacketEvents: 'Waiting for packet events...',
-    waitingChanges: 'Waiting for changes...',
+    connectionDiffFeed: 'Diff Feed',
     agentManager: 'Agents',
-    onboarding: 'Agent Onboarding (MVP)',
+    issueToken: '① Issue token',
+    downloadBundle: '② Download agent bundle',
+    terminalConfig: '③ Run config in terminal',
+    heartbeatStart: '④ Start heartbeat collection',
+    serviceInstall: '⑤ Install auto service',
     tokenTtlMinutes: 'Token TTL (min)',
-    generateToken: 'Generate Token',
+    generateToken: 'Issue token',
     enrollmentToken: 'Enrollment Token',
-    registerCommand: 'Registration Command',
+    windowsBundle: 'Download Windows bundle',
+    linuxBundle: 'Download Linux bundle',
     copy: 'Copy',
-    tokenHint: 'Run register on Windows host',
+    configCommand: 'Config command',
+    runCommand: 'Run command',
+    installCommand: 'Install service command',
     noAgents: 'No connected agents',
-    agentName: 'Agent Name',
+    waitingPacketEvents: 'Waiting for events...',
   },
 } as const
-
-const statusLabelMap: Record<Locale, Record<ConnectionStatus, string>> = {
-  ja: { confirmed: '確認済み', unverified: '未検証', conflict: '競合' },
-  en: { confirmed: 'Confirmed', unverified: 'Unverified', conflict: 'Conflict' },
-}
-
-const basisLabelMap: Record<Locale, Record<Connection['basis'], string>> = {
-  ja: { passive: '受動', config: '設定', hybrid: 'ハイブリッド' },
-  en: { passive: 'passive', config: 'config', hybrid: 'hybrid' },
-}
 
 function App() {
   const initialLocale: Locale =
     typeof navigator !== 'undefined' && navigator.language.toLowerCase().startsWith('ja') ? 'ja' : 'en'
 
   const [locale, setLocale] = useState<Locale>(initialLocale)
-  const [mode, setMode] = useState<InputMode>('mock')
-  const [activeMenu, setActiveMenu] = useState<MenuTab>('overview')
+  const [mode, setMode] = useState<InputMode>('live')
+  const [activeMenu, setActiveMenu] = useState<MenuTab>('agents')
   const [showSelfLoops, setShowSelfLoops] = useState<boolean>(true)
-  const [isMapMaximized, setIsMapMaximized] = useState<boolean>(false)
-  const [mockConnections, setMockConnections] = useState<Connection[]>(initialConnections)
   const [liveConnections, setLiveConnections] = useState<Connection[]>([])
   const [diffEvents, setDiffEvents] = useState<DiffEvent[]>([])
-  const [selectedConnectionId, setSelectedConnectionId] = useState<string>(initialConnections[0].id)
   const [registryAgents, setRegistryAgents] = useState<RegistryAgent[]>([])
   const [agentRuntime, setAgentRuntime] = useState<Record<string, AgentRuntime>>({})
-  const [onboardingAgentName, setOnboardingAgentName] = useState<string>('line-a-agent')
-  const [onboardingTtlMinutes, setOnboardingTtlMinutes] = useState<number>(15)
-  const [onboardingToken, setOnboardingToken] = useState<string>('')
+  const [ttlMinutes, setTtlMinutes] = useState<number>(15)
+  const [tokenInfo, setTokenInfo] = useState<TokenIssueResponse | null>(null)
 
   const text = textMap[locale]
-  const statusLabel = statusLabelMap[locale]
-  const basisLabel = basisLabelMap[locale]
-
   const connectedAgents = useMemo(() => registryAgents.filter((agent) => agent.status === 'connected'), [registryAgents])
   const totalPackets = useMemo(
     () => connectedAgents.reduce((sum, agent) => sum + (agentRuntime[agent.id]?.packetCount ?? 0), 0),
     [connectedAgents, agentRuntime],
   )
 
-  const agentStatusText =
-    mode === 'live'
-      ? `${connectedAgents.length}/${registryAgents.length} ${text.connectedAgents} (${totalPackets} ${text.packets})`
-      : text.disconnected
-
-  const connections = mode === 'mock' ? mockConnections : liveConnections
   const visibleConnections = useMemo(
-    () => (showSelfLoops ? connections : connections.filter((connection) => connection.source !== connection.target)),
-    [connections, showSelfLoops],
+    () => (showSelfLoops ? liveConnections : liveConnections.filter((connection) => connection.source !== connection.target)),
+    [liveConnections, showSelfLoops],
   )
+  const selectedConnection = useMemo(() => visibleConnections[0], [visibleConnections])
 
-  const selectedConnection = useMemo(
-    () => visibleConnections.find((connection) => connection.id === selectedConnectionId),
-    [visibleConnections, selectedConnectionId],
-  )
-
-  const activeDevices = useMemo(() => {
-    if (mode === 'mock') {
-      return devices
-    }
-    const uniqueIds = new Set<string>()
-    visibleConnections.forEach((connection) => {
-      uniqueIds.add(connection.source)
-      uniqueIds.add(connection.target)
-    })
-    return Array.from(uniqueIds).map((id) => ({ id, name: id, role: 'Endpoint', zone: 'Observed' }))
-  }, [mode, visibleConnections])
-
-  const elements = useMemo(
-    () => [
-      ...activeDevices.map((device) => ({ data: { id: device.id, label: device.name, role: device.role, zone: device.zone } })),
-      ...visibleConnections.map((connection) => ({
-        data: {
-          id: connection.id,
-          source: connection.source,
-          target: connection.target,
-          label: `${connection.protocol} : ${connection.port}`,
-          status: connection.status,
-        },
-      })),
-    ],
-    [activeDevices, visibleConnections],
-  )
-
-  useEffect(() => {
-    if (mode !== 'mock') return
-    const timer = window.setInterval(() => {
-      setMockConnections((previous) => {
-        const index = Math.floor(Math.random() * previous.length)
-        const next = [...previous]
-        const target = next[index]
-        const statuses: ConnectionStatus[] = ['confirmed', 'unverified', 'conflict']
-        const status = statuses[Math.floor(Math.random() * statuses.length)]
-        const updated: Connection = {
-          ...target,
-          status,
-          confidence: Math.max(40, Math.min(99, target.confidence + (Math.floor(Math.random() * 11) - 5))),
-          bandwidthKbps: Math.max(20, target.bandwidthKbps + (Math.floor(Math.random() * 101) - 50)),
-          lastSeen: new Date().toISOString(),
-        }
-        next[index] = updated
-        setDiffEvents((events) => [
-          {
-            id: `${updated.id}-${Date.now()}`,
-            timestamp: new Date().toLocaleTimeString(locale === 'ja' ? 'ja-JP' : 'en-US'),
-            connectionId: updated.id,
-            message: `${updated.protocol} ${statusLabel[updated.status]} (${updated.confidence}%)`,
-          },
-          ...events,
-        ].slice(0, 20))
-        return next
-      })
-    }, 3000)
-    return () => window.clearInterval(timer)
-  }, [locale, mode, statusLabel])
+  const agentStatusText = `${connectedAgents.length}/${registryAgents.length} ${text.connectedAgents} (${totalPackets} ${text.packets})`
 
   useEffect(() => {
     if (mode !== 'live') return
@@ -343,16 +197,10 @@ function App() {
         const parsed = JSON.parse(event.data as string) as AgentMessage
 
         if (parsed.type === 'registry_snapshot') {
-          setRegistryAgents(
-            parsed.payload.agents.map((agent) => ({ id: agent.agent_id, name: agent.agent_name, status: agent.status })),
-          )
+          setRegistryAgents(parsed.payload.agents.map((agent) => ({ id: agent.agent_id, name: agent.agent_name, status: agent.status })))
           const runtime: Record<string, AgentRuntime> = {}
           parsed.payload.agents.forEach((agent) => {
-            runtime[agent.agent_id] = {
-              state: agent.status,
-              packetCount: agent.total_packets,
-              lastHeartbeat: agent.last_seen,
-            }
+            runtime[agent.agent_id] = { state: agent.status, packetCount: agent.total_packets, lastHeartbeat: agent.last_seen }
           })
           setAgentRuntime(runtime)
           return
@@ -368,24 +216,18 @@ function App() {
             next[index] = nextItem
             return next
           })
-
           setAgentRuntime((previous) => ({
             ...previous,
-            [payload.agent_id]: {
-              state: payload.status,
-              packetCount: payload.total_packets,
-              lastHeartbeat: payload.last_seen,
-            },
+            [payload.agent_id]: { state: payload.status, packetCount: payload.total_packets, lastHeartbeat: payload.last_seen },
           }))
           return
         }
 
         if (parsed.type !== 'connection_update') return
-
         const payload = parsed.payload
-        const mergedConnectionId = `${payload.agent_id}:${payload.connection_id}`
+        const id = `${payload.agent_id}:${payload.connection_id}`
         const nextConnection: Connection = {
-          id: mergedConnectionId,
+          id,
           source: payload.src_ip,
           target: payload.dst_ip,
           agentId: payload.agent_id,
@@ -400,7 +242,7 @@ function App() {
         }
 
         setLiveConnections((previous) => {
-          const index = previous.findIndex((connection) => connection.id === nextConnection.id)
+          const index = previous.findIndex((connection) => connection.id === id)
           if (index === -1) return [nextConnection, ...previous].slice(0, 500)
           const next = [...previous]
           next[index] = nextConnection
@@ -409,13 +251,13 @@ function App() {
 
         setDiffEvents((events) => [
           {
-            id: `${mergedConnectionId}-${Date.now()}`,
+            id: `${id}-${Date.now()}`,
             timestamp: new Date().toLocaleTimeString(locale === 'ja' ? 'ja-JP' : 'en-US'),
-            connectionId: mergedConnectionId,
-            message: `[${payload.agent_name}] ${payload.protocol} ${payload.src_ip} → ${payload.dst_ip} (${payload.bytes_per_sec.toFixed(1)} B/s)`,
+            connectionId: id,
+            message: `[${payload.agent_name}] ${payload.protocol} ${payload.src_ip} → ${payload.dst_ip}`,
           },
           ...events,
-        ].slice(0, 30))
+        ].slice(0, 50))
       }
     } catch {
       setRegistryAgents([])
@@ -426,20 +268,23 @@ function App() {
     }
   }, [mode, locale])
 
-  const generateEnrollmentToken = () => {
-    const now = Math.floor(Date.now() / 1000)
-    setOnboardingToken(
-      encodeEnrollmentToken({
-        server_url: REGISTRY_AGENT_URL,
-        exp: now + onboardingTtlMinutes * 60,
-        nonce: Math.random().toString(36).slice(2, 10),
-      }),
-    )
+  const issueToken = async () => {
+    const response = await fetch(`${REGISTRY_HTTP_URL}/api/tokens`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ttl_minutes: ttlMinutes }),
+    })
+    if (!response.ok) return
+    const payload = (await response.json()) as TokenIssueResponse
+    setTokenInfo(payload)
   }
 
-  const onboardingCommand = onboardingToken
-    ? `python agent.py register --token "${onboardingToken}" --agent-name "${onboardingAgentName}"`
+  const configCommand = tokenInfo
+    ? `python agent.py config --registry-url "${tokenInfo.registry_http_url}" --agent-name "my-agent" --token "${tokenInfo.token}"`
     : ''
+
+  const runCommand = 'python agent.py run'
+  const installCommand = 'python agent.py install-service'
 
   const menuItems: Array<{ key: MenuTab; label: string }> = [
     { key: 'overview', label: text.menuOverview },
@@ -450,10 +295,7 @@ function App() {
   return (
     <div className="app">
       <header className="header">
-        <div>
-          <h1>FLEX</h1>
-          <p>{text.appSubtitle}</p>
-        </div>
+        <div><h1>FLEX</h1><p>{text.appSubtitle}</p></div>
         <span className="badge">{text.input}: {mode === 'mock' ? text.mockData : text.realPacketStream}</span>
       </header>
 
@@ -462,14 +304,7 @@ function App() {
           <h2>{text.menu}</h2>
           <div className="menu-list">
             {menuItems.map((item) => (
-              <button
-                key={item.key}
-                type="button"
-                className={`menu-button ${activeMenu === item.key ? 'active' : ''}`}
-                onClick={() => setActiveMenu(item.key)}
-              >
-                {item.label}
-              </button>
+              <button key={item.key} type="button" className={`menu-button ${activeMenu === item.key ? 'active' : ''}`} onClick={() => setActiveMenu(item.key)}>{item.label}</button>
             ))}
           </div>
           <div className="agent-status">{text.agent}: {agentStatusText}</div>
@@ -480,24 +315,18 @@ function App() {
             <section className="card control-card resizable-card">
               <h2>Settings</h2>
               <div className="controls">
-                <label>
-                  {text.language}
+                <label>{text.language}
                   <select value={locale} onChange={(event) => setLocale(event.target.value as Locale)}>
-                    <option value="ja">日本語</option>
-                    <option value="en">English</option>
+                    <option value="ja">日本語</option><option value="en">English</option>
                   </select>
                 </label>
-                <label>
-                  {text.mode}
+                <label>{text.mode}
                   <select value={mode} onChange={(event) => setMode(event.target.value as InputMode)}>
-                    <option value="mock">{text.mockData}</option>
                     <option value="live">{text.livePacketAgent}</option>
+                    <option value="mock">{text.mockData}</option>
                   </select>
                 </label>
-                <label className="checkbox-label">
-                  <input type="checkbox" checked={showSelfLoops} onChange={(event) => setShowSelfLoops(event.target.checked)} />
-                  {text.showSelfLoop}
-                </label>
+                <label className="checkbox-label"><input type="checkbox" checked={showSelfLoops} onChange={(event) => setShowSelfLoops(event.target.checked)} />{text.showSelfLoop}</label>
               </div>
             </section>
           ) : null}
@@ -506,60 +335,35 @@ function App() {
             <section className="card agent-manager-card resizable-card">
               <h2>{text.agentManager}</h2>
               <table className="agent-table">
-                <thead>
-                  <tr>
-                    <th>{text.agentName}</th>
-                    <th>{text.status}</th>
-                    <th>{text.packets}</th>
-                  </tr>
-                </thead>
+                <thead><tr><th>Name</th><th>Status</th><th>{text.packets}</th></tr></thead>
                 <tbody>
-                  {registryAgents.length === 0 ? (
-                    <tr><td colSpan={3}>{text.noAgents}</td></tr>
-                  ) : (
-                    registryAgents.map((agent) => (
-                      <tr key={agent.id}>
-                        <td>{agent.name}</td>
-                        <td>{agent.status === 'connected' ? text.connected : text.disconnected}</td>
-                        <td>{agentRuntime[agent.id]?.packetCount ?? 0}</td>
-                      </tr>
-                    ))
-                  )}
+                  {registryAgents.length === 0 ? <tr><td colSpan={3}>{text.noAgents}</td></tr> : registryAgents.map((agent) => (
+                    <tr key={agent.id}><td>{agent.name}</td><td>{agent.status}</td><td>{agentRuntime[agent.id]?.packetCount ?? 0}</td></tr>
+                  ))}
                 </tbody>
               </table>
 
               <section className="card onboarding-card">
-                <h2>{text.onboarding}</h2>
+                <h2>{text.issueToken}</h2>
                 <div className="onboarding-form">
-                  <label>
-                    {text.agentName}
-                    <input type="text" value={onboardingAgentName} onChange={(event) => setOnboardingAgentName(event.target.value)} />
-                  </label>
-                  <label>
-                    {text.tokenTtlMinutes}
-                    <input
-                      type="number"
-                      min={1}
-                      max={1440}
-                      value={onboardingTtlMinutes}
-                      onChange={(event) => setOnboardingTtlMinutes(Number(event.target.value) || 15)}
-                    />
-                  </label>
-                  <button type="button" onClick={generateEnrollmentToken}>{text.generateToken}</button>
+                  <label>{text.tokenTtlMinutes}<input type="number" min={1} max={1440} value={ttlMinutes} onChange={(e) => setTtlMinutes(Number(e.target.value) || 15)} /></label>
+                  <button type="button" onClick={issueToken}>{text.generateToken}</button>
                 </div>
-                {onboardingToken ? (
+
+                {tokenInfo ? (
                   <div className="onboarding-result">
-                    <label>
-                      {text.enrollmentToken}
-                      <textarea value={onboardingToken} readOnly rows={3} />
-                    </label>
-                    <label>
-                      {text.registerCommand}
-                      <textarea value={onboardingCommand} readOnly rows={3} />
-                    </label>
+                    <label>{text.enrollmentToken}<textarea readOnly rows={3} value={tokenInfo.token} /></label>
                     <div className="onboarding-actions">
-                      <button type="button" onClick={() => { void navigator.clipboard.writeText(onboardingCommand) }}>{text.copy}</button>
-                      <span>{text.tokenHint}</span>
+                      <a href={tokenInfo.download.windows} target="_blank" rel="noreferrer">{text.windowsBundle}</a>
+                      <a href={tokenInfo.download.linux} target="_blank" rel="noreferrer">{text.linuxBundle}</a>
+                    </div>
+                    <label>{text.terminalConfig}<textarea readOnly rows={4} value={configCommand} /></label>
+                    <label>{text.heartbeatStart}<textarea readOnly rows={2} value={runCommand} /></label>
+                    <label>{text.serviceInstall}<textarea readOnly rows={2} value={installCommand} /></label>
+                    <div className="onboarding-actions">
+                      <button type="button" onClick={() => { void navigator.clipboard.writeText(configCommand) }}>{text.copy} ({text.configCommand})</button>
+                      <button type="button" onClick={() => { void navigator.clipboard.writeText(runCommand) }}>{text.copy} ({text.runCommand})</button>
+                      <button type="button" onClick={() => { void navigator.clipboard.writeText(installCommand) }}>{text.copy} ({text.installCommand})</button>
                     </div>
                   </div>
                 ) : null}
@@ -571,60 +375,21 @@ function App() {
             <>
               <section className="top-grid">
                 <div className="card graph-card resizable-card">
-                  <div className="graph-header">
-                    <h2>{text.equipmentConnectivityMap}</h2>
-                    <button type="button" className="graph-toggle" onClick={() => setIsMapMaximized((v) => !v)}>
-                      {isMapMaximized ? text.restore : text.maximize}
-                    </button>
-                  </div>
+                  <h2>{text.equipmentConnectivityMap}</h2>
                   <CytoscapeComponent
-                    elements={elements}
-                    style={{ width: '100%', height: isMapMaximized ? '82vh' : 'clamp(420px, 56vh, 760px)' }}
-                    layout={{ name: activeDevices.length <= 12 ? 'circle' : 'cose', fit: true, padding: 40, animate: false }}
-                    stylesheet={[
-                      { selector: 'node', style: { label: 'data(label)', 'background-color': '#3f83f8', color: '#ffffff', 'font-size': '11px', width: 42, height: 42 } },
-                      { selector: 'edge', style: { width: 3, label: 'data(label)', 'curve-style': 'bezier', 'target-arrow-shape': 'triangle', 'font-size': '9px', color: '#e2e8f0', 'line-color': '#60a5fa', 'target-arrow-color': '#60a5fa' } },
-                      { selector: 'edge[status = "confirmed"]', style: { 'line-color': '#22c55e', 'target-arrow-color': '#22c55e' } },
-                      { selector: 'edge[status = "unverified"]', style: { 'line-color': '#f59e0b', 'target-arrow-color': '#f59e0b' } },
-                      { selector: 'edge[status = "conflict"]', style: { 'line-color': '#ef4444', 'target-arrow-color': '#ef4444' } },
-                    ]}
+                    elements={visibleConnections.map((connection) => ({ data: { id: connection.id, source: connection.source, target: connection.target, label: `${connection.protocol}:${connection.port}` } }))}
+                    style={{ width: '100%', height: 'clamp(420px, 56vh, 760px)' }}
+                    layout={{ name: 'cose', fit: true, padding: 40, animate: false }}
                   />
                 </div>
-
                 <div className="card detail-card resizable-card">
                   <h2>{text.connectionDetails}</h2>
-                  {selectedConnection ? (
-                    <dl>
-                      <div><dt>{text.connection}</dt><dd>{selectedConnection.source} → {selectedConnection.target}</dd></div>
-                      <div><dt>{text.protocol}</dt><dd>{selectedConnection.protocol}</dd></div>
-                      <div><dt>{text.sourceAgent}</dt><dd>{selectedConnection.agentName}</dd></div>
-                      <div><dt>{text.port}</dt><dd>{selectedConnection.port}</dd></div>
-                      <div><dt>{text.status}</dt><dd>{statusLabel[selectedConnection.status]}</dd></div>
-                      <div><dt>{text.confidence}</dt><dd>{selectedConnection.confidence}%</dd></div>
-                      <div><dt>{text.evidence}</dt><dd>{basisLabel[selectedConnection.basis]}</dd></div>
-                      <div><dt>{text.bandwidth}</dt><dd>{selectedConnection.bandwidthKbps} kbps</dd></div>
-                      <div><dt>{text.lastSeen}</dt><dd>{new Date(selectedConnection.lastSeen).toLocaleTimeString(locale === 'ja' ? 'ja-JP' : 'en-US')}</dd></div>
-                    </dl>
-                  ) : <p>{text.noConnectionSelected}</p>}
+                  {selectedConnection ? <div>{selectedConnection.source} → {selectedConnection.target}</div> : <p>{text.waitingPacketEvents}</p>}
                 </div>
               </section>
-
               <section className="card diff-card resizable-card">
                 <h2>{text.connectionDiffFeed}</h2>
-                <table>
-                  <thead><tr><th>{text.time}</th><th>{text.connection}</th><th>{text.change}</th></tr></thead>
-                  <tbody>
-                    {diffEvents.length === 0 ? (
-                      <tr><td colSpan={3}>{mode === 'live' ? text.waitingPacketEvents : text.waitingChanges}</td></tr>
-                    ) : (
-                      diffEvents.map((event) => (
-                        <tr key={event.id} onClick={() => setSelectedConnectionId(event.connectionId)}>
-                          <td>{event.timestamp}</td><td>{event.connectionId}</td><td>{event.message}</td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
+                <table><tbody>{diffEvents.slice(0, 20).map((event) => <tr key={event.id}><td>{event.timestamp}</td><td>{event.message}</td></tr>)}</tbody></table>
               </section>
             </>
           ) : null}

@@ -246,6 +246,18 @@
   cursor: pointer;
 }
 
+.onboarding-actions a {
+  display: inline-flex;
+  align-items: center;
+  height: 36px;
+  border: 1px solid #475569;
+  border-radius: 8px;
+  background: #1e293b;
+  color: #e2e8f0;
+  padding: 0 12px;
+  text-decoration: none;
+}
+
 .onboarding-result {
   margin-top: 12px;
   display: grid;

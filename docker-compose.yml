@@ -6,15 +6,15 @@ services:
     ports:
       - "5173:5173"
     environment:
-      - VITE_REGISTRY_WS_URL=${VITE_REGISTRY_WS_URL:-ws://localhost:8780/ui}
+      - VITE_REGISTRY_HTTP_URL=${VITE_REGISTRY_HTTP_URL:-http://localhost:8780}
     depends_on:
       - packet-agent
       - agent-registry
 
   agent-registry:
     build:
-      context: ./agent-registry
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: agent-registry/Dockerfile
     ports:
       - "8780:8780"
 
@@ -28,7 +28,7 @@ services:
         "agent.py",
         "run",
         "--upstream-url",
-        "${FLEX_UPSTREAM_URL:-ws://agent-registry:8780/agent}",
+        "${FLEX_UPSTREAM_URL:-ws://agent-registry:8780/ws/agent}",
         "--agent-id",
         "${FLEX_AGENT_ID:-agent-docker}",
         "--agent-name",
