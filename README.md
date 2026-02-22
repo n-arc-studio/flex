@@ -90,3 +90,18 @@ python agent.py install-service
 
 - Windows の Docker Desktop コンテナから物理 NIC の直接スニッフィングが難しい場合があります。
 - 実ネットワークの観測は、Linux ホストの agent 実行、または Windows ホストで `packet-agent` 直接実行を推奨します。
+
+## 回帰テスト
+
+バックエンド回帰テスト（認証、WSトークン保持、ループバック除外、署名Webhookリプレイ防止、運用API）を実行します。
+
+```bash
+python -m unittest discover -s agent-registry/tests -p "test_*.py"
+```
+
+Docker で実行する場合（依存関係込みで確実）:
+
+```bash
+docker compose build agent-registry
+docker compose run --rm agent-registry python -m unittest discover -s /app/tests -p "test_*.py"
+```
