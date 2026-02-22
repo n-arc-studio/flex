@@ -1,14 +1,20 @@
 import argparse
 import asyncio
+import base64
 import hashlib
 import json
+import os
 import signal
+import sys
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from typing import Dict, Optional, Set, Tuple
+from urllib.parse import urlparse
 
 from scapy.all import IP, TCP, UDP, sniff
+from websockets.asyncio.client import connect
 from websockets.asyncio.server import ServerConnection, serve
 
 
@@ -228,7 +234,14 @@ async def broadcast(clients: Set[ServerConnection], message: dict) -> None:
         clients.discard(client)
 
 
-async def run_websocket_server(host: str, port: int, aggregator: PacketAggregator, interval: float) -> None:
+async def run_websocket_server(
+    host: str,
+    port: int,
+    aggregator: PacketAggregator,
+    interval: float,
+    agent_id: str,
+    agent_name: str,
+) -> None:
     clients: Set[ServerConnection] = set()
 
     async def handler(websocket: ServerConnection) -> None:
@@ -240,6 +253,8 @@ async def run_websocket_server(host: str, port: int, aggregator: PacketAggregato
                     "payload": {
                         "message": "FLEX packet agent connected",
                         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                        "agent_id": agent_id,
+                        "agent_name": agent_name,
                     },
                 }
             )
@@ -259,6 +274,8 @@ async def run_websocket_server(host: str, port: int, aggregator: PacketAggregato
                     "type": "heartbeat",
                     "payload": {
                         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                        "agent_id": agent_id,
+                        "agent_name": agent_name,
                         **aggregator.metrics(),
                     },
                 },
@@ -278,6 +295,57 @@ async def run_websocket_server(host: str, port: int, aggregator: PacketAggregato
         await publisher()
 
 
+async def run_upstream_client(upstream_url: str, aggregator: PacketAggregator, interval: float, agent_id: str, agent_name: str) -> None:
+    print(f"[FLEX agent] Upstream mode: {upstream_url}")
+
+    while True:
+        try:
+            async with connect(upstream_url) as websocket:
+                await websocket.send(
+                    json.dumps(
+                        {
+                            "type": "hello",
+                            "payload": {
+                                "message": "FLEX packet agent connected",
+                                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                                "agent_id": agent_id,
+                                "agent_name": agent_name,
+                            },
+                        }
+                    )
+                )
+
+                while True:
+                    await asyncio.sleep(interval)
+                    await websocket.send(
+                        json.dumps(
+                            {
+                                "type": "heartbeat",
+                                "payload": {
+                                    "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                                    "agent_id": agent_id,
+                                    "agent_name": agent_name,
+                                    **aggregator.metrics(),
+                                },
+                            }
+                        )
+                    )
+
+                    updates = aggregator.snapshot(interval)
+                    for update in updates:
+                        await websocket.send(
+                            json.dumps(
+                                {
+                                    "type": "connection_update",
+                                    "payload": update,
+                                }
+                            )
+                        )
+        except Exception as error:  # noqa: BLE001
+            print(f"[FLEX agent] Upstream disconnected: {error}")
+            await asyncio.sleep(2)
+
+
 def capture_loop(interface: Optional[str], bpf_filter: Optional[str], aggregator: PacketAggregator, stop_flag: threading.Event) -> None:
     kwargs = {
         "prn": aggregator.ingest_packet,
@@ -295,49 +363,218 @@ def capture_loop(interface: Optional[str], bpf_filter: Optional[str], aggregator
         sniff(**kwargs)
 
 
-def parse_args() -> argparse.Namespace:
+def default_config_path() -> str:
+    if os.name == "nt":
+        program_data = os.getenv("PROGRAMDATA", r"C:\ProgramData")
+        return os.path.join(program_data, "FLEX", "agent-config.json")
+
+    home_dir = os.path.expanduser("~")
+    return os.path.join(home_dir, ".config", "flex", "agent-config.json")
+
+
+def parse_server_url(server_url: str) -> Tuple[str, int]:
+    parsed = urlparse(server_url)
+    if parsed.scheme not in ("ws", "wss"):
+        raise ValueError("server_url must start with ws:// or wss://")
+    if not parsed.hostname:
+        raise ValueError("server_url must include hostname")
+
+    if parsed.port is not None:
+        return parsed.hostname, parsed.port
+
+    if parsed.scheme == "wss":
+        return parsed.hostname, 443
+
+    return parsed.hostname, 80
+
+
+def decode_register_token(token: str) -> dict:
+    prefix = "flexreg.v1."
+    if not token.startswith(prefix):
+        raise ValueError("invalid token format")
+
+    encoded = token[len(prefix) :]
+    padding = "=" * ((4 - len(encoded) % 4) % 4)
+
+    try:
+        payload_bytes = base64.urlsafe_b64decode((encoded + padding).encode("utf-8"))
+        payload = json.loads(payload_bytes.decode("utf-8"))
+    except Exception as error:  # noqa: BLE001
+        raise ValueError("token decode failed") from error
+
+    expires_at = int(payload.get("exp", 0))
+    if expires_at <= int(time.time()):
+        raise ValueError("token expired")
+
+    server_url = payload.get("server_url")
+    if not isinstance(server_url, str) or not server_url:
+        raise ValueError("token missing server_url")
+
+    return payload
+
+
+def save_agent_config(config_path: str, config: dict) -> None:
+    directory = os.path.dirname(config_path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+
+    with open(config_path, "w", encoding="utf-8") as file:
+        json.dump(config, file, ensure_ascii=False, indent=2)
+
+
+def load_agent_config(config_path: str) -> Optional[dict]:
+    if not os.path.exists(config_path):
+        return None
+
+    with open(config_path, "r", encoding="utf-8") as file:
+        return json.load(file)
+
+
+def parse_cli_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="FLEX packet capture agent")
-    parser.add_argument("--iface", type=str, default=None, help="Capture interface name")
-    parser.add_argument("--host", type=str, default="127.0.0.1", help="WebSocket bind host")
-    parser.add_argument("--port", type=int, default=8765, help="WebSocket bind port")
-    parser.add_argument("--interval", type=float, default=2.0, help="Publish interval seconds")
-    parser.add_argument("--idle-timeout", type=int, default=120, help="Idle connection timeout seconds")
-    parser.add_argument(
+    subparsers = parser.add_subparsers(dest="command")
+
+    run_parser = subparsers.add_parser("run", help="Run packet capture agent")
+    run_parser.add_argument("--iface", type=str, default=None, help="Capture interface name")
+    run_parser.add_argument("--host", type=str, default=None, help="WebSocket bind host")
+    run_parser.add_argument("--port", type=int, default=None, help="WebSocket bind port")
+    run_parser.add_argument("--interval", type=float, default=None, help="Publish interval seconds")
+    run_parser.add_argument("--idle-timeout", type=int, default=None, help="Idle connection timeout seconds")
+    run_parser.add_argument(
         "--bpf",
         type=str,
-        default="tcp or udp",
+        default=None,
         help="Optional BPF filter, example: 'tcp port 502 or tcp port 44818'",
     )
-    parser.add_argument(
+    run_parser.add_argument(
         "--protocol-port-map",
         type=str,
-        default="",
+        default=None,
         help="Extra protocol map, format: 'OPC UA:62557,MyProto:12345'",
     )
-    parser.add_argument(
+    run_parser.add_argument(
         "--endpoint-protocol-map",
         type=str,
-        default="",
+        default=None,
         help="Endpoint protocol map, format: '192.168.1.50-192.168.1.100:OPC UA'",
     )
-    return parser.parse_args()
+    run_parser.add_argument(
+        "--agent-id",
+        type=str,
+        default=None,
+        help="Unique agent identifier for multi-agent management",
+    )
+    run_parser.add_argument(
+        "--agent-name",
+        type=str,
+        default=None,
+        help="Display name for this agent",
+    )
+    run_parser.add_argument(
+        "--config-path",
+        type=str,
+        default=default_config_path(),
+        help="Agent config path for registered settings",
+    )
+    run_parser.add_argument(
+        "--skip-config",
+        action="store_true",
+        help="Ignore saved config and use explicit run options only",
+    )
+    run_parser.add_argument(
+        "--upstream-url",
+        type=str,
+        default=None,
+        help="Registry websocket URL. When set, agent pushes events to upstream instead of serving ws locally.",
+    )
+
+    register_parser = subparsers.add_parser("register", help="Register agent settings from onboarding token")
+    register_parser.add_argument("--token", type=str, required=True, help="Enrollment token from FLEX UI")
+    register_parser.add_argument("--agent-name", type=str, required=True, help="Agent display name")
+    register_parser.add_argument("--agent-id", type=str, default="", help="Optional fixed agent id")
+    register_parser.add_argument("--server-url", type=str, default="", help="Optional override for token server url")
+    register_parser.add_argument(
+        "--config-path",
+        type=str,
+        default=default_config_path(),
+        help="Agent config path",
+    )
+
+    argv = sys.argv[1:]
+    if not argv or argv[0].startswith("-"):
+        argv = ["run", *argv]
+
+    return parser.parse_args(argv)
+
+
+def register_agent(args: argparse.Namespace) -> None:
+    token_payload = decode_register_token(args.token)
+    server_url = args.server_url.strip() or str(token_payload["server_url"])
+
+    agent_id = args.agent_id.strip() or f"agent-{uuid.uuid4().hex[:10]}"
+    now = int(time.time())
+
+    config = {
+        "version": 1,
+        "registered_at": now,
+        "agent_id": agent_id,
+        "agent_name": args.agent_name.strip(),
+        "upstream_url": server_url,
+    }
+
+    save_agent_config(args.config_path, config)
+    print(f"[FLEX agent] Registered agent '{config['agent_name']}' ({agent_id})")
+    print(f"[FLEX agent] Config saved: {args.config_path}")
+    print("[FLEX agent] Next: python agent.py run")
+
+
+def resolve_run_option(explicit_value, config: Optional[dict], config_key: str, fallback):
+    if explicit_value is not None:
+        return explicit_value
+    if config and config_key in config:
+        return config[config_key]
+    return fallback
 
 
 def main() -> None:
-    args = parse_args()
+    args = parse_cli_args()
+
+    if args.command == "register":
+        register_agent(args)
+        return
+
+    config = None if args.skip_config else load_agent_config(args.config_path)
+
+    host = resolve_run_option(args.host, config, "host", "127.0.0.1")
+    port = int(resolve_run_option(args.port, config, "port", 8765))
+    interval = float(resolve_run_option(args.interval, config, "interval", 2.0))
+    idle_timeout = int(resolve_run_option(args.idle_timeout, config, "idle_timeout", 120))
+    iface = resolve_run_option(args.iface, config, "iface", None)
+    bpf = resolve_run_option(args.bpf, config, "bpf", "tcp or udp")
+    protocol_port_map_text = resolve_run_option(args.protocol_port_map, config, "protocol_port_map", "")
+    endpoint_protocol_map_text = resolve_run_option(args.endpoint_protocol_map, config, "endpoint_protocol_map", "")
+    agent_id = resolve_run_option(args.agent_id, config, "agent_id", os.getenv("FLEX_AGENT_ID", "agent-local"))
+    agent_name = resolve_run_option(
+        args.agent_name,
+        config,
+        "agent_name",
+        os.getenv("FLEX_AGENT_NAME", "Local Packet Agent"),
+    )
+    upstream_url = resolve_run_option(args.upstream_url, config, "upstream_url", os.getenv("FLEX_UPSTREAM_URL", ""))
+
     protocol_port_map = dict(PROTOCOL_PORT_MAP)
-    protocol_port_map.update(parse_protocol_port_map(args.protocol_port_map))
-    endpoint_protocol_map = parse_endpoint_protocol_map(args.endpoint_protocol_map)
+    protocol_port_map.update(parse_protocol_port_map(protocol_port_map_text))
+    endpoint_protocol_map = parse_endpoint_protocol_map(endpoint_protocol_map_text)
 
     aggregator = PacketAggregator(
-        idle_timeout_seconds=args.idle_timeout,
+        idle_timeout_seconds=idle_timeout,
         protocol_port_map=protocol_port_map,
         endpoint_protocol_map=endpoint_protocol_map,
     )
     stop_capture = threading.Event()
     capture_thread = threading.Thread(
         target=capture_loop,
-        args=(args.iface, args.bpf, aggregator, stop_capture),
+        args=(iface, bpf, aggregator, stop_capture),
         daemon=True,
     )
 
@@ -356,7 +593,19 @@ def main() -> None:
     signal.signal(signal.SIGTERM, stop_handler)
 
     async def runner() -> None:
-        server_task = asyncio.create_task(run_websocket_server(args.host, args.port, aggregator, args.interval))
+        if upstream_url:
+            server_task = asyncio.create_task(run_upstream_client(upstream_url, aggregator, interval, agent_id, agent_name))
+        else:
+            server_task = asyncio.create_task(
+                run_websocket_server(
+                    host,
+                    port,
+                    aggregator,
+                    interval,
+                    agent_id,
+                    agent_name,
+                )
+            )
         await stop_event.wait()
         server_task.cancel()
         try:

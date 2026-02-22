@@ -6,24 +6,33 @@ services:
     ports:
       - "5173:5173"
     environment:
-      - VITE_AGENT_URL=${VITE_AGENT_URL:-ws://localhost:8765}
+      - VITE_REGISTRY_WS_URL=${VITE_REGISTRY_WS_URL:-ws://localhost:8780/ui}
     depends_on:
       - packet-agent
+      - agent-registry
+
+  agent-registry:
+    build:
+      context: ./agent-registry
+      dockerfile: Dockerfile
+    ports:
+      - "8780:8780"
 
   packet-agent:
     build:
       context: ./packet-agent
       dockerfile: Dockerfile
-    ports:
-      - "8765:8765"
     command:
       [
         "python",
         "agent.py",
-        "--host",
-        "0.0.0.0",
-        "--port",
-        "8765",
+        "run",
+        "--upstream-url",
+        "${FLEX_UPSTREAM_URL:-ws://agent-registry:8780/agent}",
+        "--agent-id",
+        "${FLEX_AGENT_ID:-agent-docker}",
+        "--agent-name",
+        "${FLEX_AGENT_NAME:-Docker Packet Agent}",
         "--bpf",
         "${FLEX_AGENT_BPF:-tcp or udp}",
         "--protocol-port-map",
@@ -31,6 +40,8 @@ services:
         "--endpoint-protocol-map",
         "${FLEX_ENDPOINT_PROTOCOL_MAP:-}",
       ]
+    depends_on:
+      - agent-registry
     cap_add:
       - NET_ADMIN
       - NET_RAW

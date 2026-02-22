@@ -1,6 +1,6 @@
 # FLEX
 
-Factory Link Explorer (FLEX) の可視化アプリです。設備接続グラフを表示し、`Mock` と `Live Packet Stream` を切り替えて接続変化を確認できます。
+Factory Link Explorer (FLEX) の可視化アプリです。設備接続グラフを表示し、`Mock` と `Live` を切り替えて接続変化を確認できます。AgentはRegistryへ自発接続し、UIはRegistryを購読します（URL入力不要）。
 
 ## 構成
 
@@ -25,7 +25,8 @@ docker compose up --build
 ```
 
 - Frontend: `http://localhost:5173`
-- Packet Agent WebSocket: `ws://localhost:8765`
+- Agent Registry(UI): `ws://localhost:8780/ui`
+- Agent Registry(Agent): `ws://localhost:8780/agent`
 
 必要なら `.env.example` を `.env` にコピーして値を調整します。
 
@@ -38,6 +39,8 @@ copy .env.example .env
 ```dotenv
 FLEX_PROTOCOL_PORT_MAP=OPC UA:62557,MyProto:12000
 FLEX_ENDPOINT_PROTOCOL_MAP=192.168.1.50-192.168.1.100:OPC UA
+FLEX_AGENT_ID=agent-docker
+FLEX_AGENT_NAME=Docker Packet Agent
 ```
 
 ### 停止
@@ -67,6 +70,9 @@ pip install -r requirements.txt
 
 ```bash
 python agent.py --host 127.0.0.1 --port 8765
+
+# エージェント識別情報を指定（推奨）
+python agent.py --host 127.0.0.1 --port 8765 --agent-id line-a --agent-name "Line A Sensor"
 ```
 
 必要に応じてインターフェース指定:
@@ -77,9 +83,42 @@ python agent.py --iface "Ethernet" --bpf "tcp or udp"
 
 ## 3) UIでLive接続
 
-1. UIの `Mode` を `Live (Packet Agent)` に変更
-2. `Agent URL` を `ws://127.0.0.1:8765` に設定
-3. `Agent: Connected` になれば実パケット由来の接続が反映
+1. UIの `Mode` を `Live (Registry)` に変更
+2. Agent側で `register` と `run` を実行
+3. `Agents + Onboarding` タブにAgent状態が表示されれば接続完了
+
+## 3.5) MVP: Self-hosted風の登録手順
+
+GitHub Actions self-hosted runner登録に近い手順で、URL手入力なしの登録を行えます。
+
+1. UIの `エージェント登録 (MVP)` で `登録先URL` / `エージェント名` / `トークン有効期限` を設定
+2. `登録トークン生成` を押す
+3. 表示された `登録コマンド` をWindowsホストの `packet-agent` ディレクトリで実行
+4. 以降は `python agent.py run` で保存済み設定から起動
+
+例:
+
+```bash
+python agent.py register --token "flexreg.v1.xxxxx" --agent-name "line-a-agent"
+python agent.py run
+```
+
+保存先（既定）:
+
+- Windows: `C:\ProgramData\FLEX\agent-config.json`
+- Linux/macOS: `~/.config/flex/agent-config.json`
+
+補足:
+
+- `python agent.py` は `python agent.py run` と同義です
+- `--skip-config` を付けると保存済み設定を無視できます
+
+## 4) 複数エージェント管理（一覧）
+
+- AgentはRegistryへ自発接続（GitHub runner型）
+- UIはRegistryの状態を一覧表示（URL入力・手動Reconnect不要）
+- `Agents + Onboarding` タブで登録トークン生成と登録コマンド表示
+- 接続詳細にどのエージェント由来か (`Source Agent`) を表示
 
 ## 注意事項（Windows + Docker）
 
@@ -89,6 +128,20 @@ python agent.py --iface "Ethernet" --bpf "tcp or udp"
   - Windowsでは`packet-agent`をホストで直接実行し、FrontendのみDockerで実行
 
 ## エージェントが送るイベント形式
+
+`hello` / `heartbeat` は `agent_id` と `agent_name` を含めます。
+
+```json
+{
+  "type": "hello",
+  "payload": {
+    "message": "FLEX packet agent connected",
+    "timestamp": "2026-02-20T14:22:10Z",
+    "agent_id": "line-a",
+    "agent_name": "Line A Sensor"
+  }
+}
+```
 
 ```json
 {

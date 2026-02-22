@@ -22,5 +22,5 @@ body {
 
 #root {
   min-height: 100vh;
-  padding: 20px;
+  padding: clamp(8px, 1.6vw, 20px);
 }

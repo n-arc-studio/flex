@@ -1,8 +1,48 @@
 .app {
-  width: min(1280px, 100%);
+  width: 100%;
+  min-height: calc(100vh - 24px);
   margin: 0 auto;
   display: grid;
   gap: 16px;
+}
+
+.layout-shell {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.main-panel {
+  display: grid;
+  gap: 16px;
+}
+
+.menu-card {
+  position: sticky;
+  top: 12px;
+}
+
+.menu-list {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.menu-button {
+  height: 36px;
+  border: 1px solid #475569;
+  border-radius: 8px;
+  background: #1e293b;
+  color: #e2e8f0;
+  text-align: left;
+  padding: 0 12px;
+  cursor: pointer;
+}
+
+.menu-button.active {
+  border-color: #60a5fa;
+  background: #0f1d35;
 }
 
 .header {
@@ -32,7 +72,7 @@
 
 .top-grid {
   display: grid;
-  grid-template-columns: 2fr 1fr;
+  grid-template-columns: minmax(520px, 2fr) minmax(280px, 1fr);
   gap: 16px;
 }
 
@@ -55,9 +95,19 @@
 
 .controls {
   display: grid;
-  grid-template-columns: 180px 1fr auto auto;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
   gap: 12px;
   align-items: end;
+}
+
+.checkbox-label {
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 8px;
+}
+
+.checkbox-label input {
+  width: auto;
 }
 
 .controls label {
@@ -104,8 +154,129 @@
   background: #0b1220;
 }
 
+.agent-manager-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.agent-manager-header h2 {
+  margin: 0;
+}
+
+.agent-manager-header button {
+  height: 34px;
+  border: 1px solid #475569;
+  border-radius: 8px;
+  background: #1e293b;
+  color: #e2e8f0;
+  padding: 0 12px;
+  cursor: pointer;
+}
+
+.agent-table input[type='text'] {
+  width: 100%;
+  background: #020617;
+  color: #e2e8f0;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  padding: 6px 8px;
+}
+
+.agent-table input[type='checkbox'] {
+  width: auto;
+}
+
+.agent-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.agent-actions button {
+  height: 30px;
+  border: 1px solid #475569;
+  border-radius: 8px;
+  background: #1e293b;
+  color: #e2e8f0;
+  padding: 0 10px;
+  cursor: pointer;
+}
+
+.agent-actions button:disabled,
+.agent-manager-header button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.onboarding-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 12px;
+  align-items: end;
+}
+
+.onboarding-form label,
+.onboarding-result label {
+  display: grid;
+  gap: 6px;
+  font-size: 0.82rem;
+  color: #94a3b8;
+}
+
+.onboarding-form input,
+.onboarding-result textarea {
+  width: 100%;
+  background: #020617;
+  color: #e2e8f0;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
+.onboarding-form button,
+.onboarding-actions button {
+  height: 36px;
+  border: 1px solid #475569;
+  border-radius: 8px;
+  background: #1e293b;
+  color: #e2e8f0;
+  padding: 0 12px;
+  cursor: pointer;
+}
+
+.onboarding-result {
+  margin-top: 12px;
+  display: grid;
+  gap: 10px;
+}
+
+.onboarding-result textarea {
+  resize: vertical;
+  font-family: inherit;
+}
+
+.onboarding-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.onboarding-actions span {
+  color: #94a3b8;
+  font-size: 0.8rem;
+}
+
 .graph-card {
   min-height: 460px;
+}
+
+.resizable-card {
+  resize: both;
+  overflow: auto;
+  min-width: 260px;
+  min-height: 180px;
 }
 
 .graph-header {
@@ -143,6 +314,7 @@
 
 .map-maximized .graph-card {
   min-height: calc(100vh - 40px);
+  resize: none;
 }
 
 .detail-card dl {
@@ -169,6 +341,7 @@
 table {
   width: 100%;
   border-collapse: collapse;
+  min-width: 520px;
 }
 
 thead th {
@@ -194,11 +367,45 @@ tbody tr:hover {
 }
 
 @media (max-width: 960px) {
+  .app {
+    min-height: auto;
+  }
+
   .controls {
     grid-template-columns: 1fr;
   }
 
   .top-grid {
     grid-template-columns: 1fr;
+  }
+
+  .layout-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .menu-card {
+    position: static;
+  }
+
+  .menu-list {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .resizable-card {
+    resize: none;
+    min-width: 0;
+  }
+
+  table {
+    min-width: 0;
+  }
+
+  .agent-actions {
+    flex-direction: column;
+  }
+
+  .onboarding-actions {
+    flex-direction: column;
+    align-items: flex-start;
   }
 }
