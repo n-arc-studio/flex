@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Dict, Optional, Set, Tuple
 from urllib import error, request
 
-from scapy.all import IP, TCP, UDP, sniff
+from scapy.all import IP, TCP, UDP, get_if_list, sniff
 from websockets.asyncio.client import connect
 from websockets.asyncio.server import ServerConnection, serve
 
@@ -351,14 +351,37 @@ async def run_upstream_client(upstream_url: str, aggregator: PacketAggregator, i
             await asyncio.sleep(2)
 
 
-def capture_loop(interface: Optional[str], bpf_filter: Optional[str], aggregator: PacketAggregator, stop_flag: threading.Event) -> None:
+def capture_loop(interface, bpf_filter: Optional[str], aggregator: PacketAggregator, stop_flag: threading.Event) -> None:
     kwargs = {'prn': aggregator.ingest_packet, 'store': False, 'timeout': 1}
     if interface:
         kwargs['iface'] = interface
     if bpf_filter:
         kwargs['filter'] = bpf_filter
     while not stop_flag.is_set():
-        sniff(**kwargs)
+        try:
+            sniff(**kwargs)
+        except Exception as exc:  # noqa: BLE001
+            print(f'[FLEX agent] Capture error: {exc}')
+            time.sleep(1)
+
+
+def resolve_capture_interface(interface, upstream_url: str):
+    if interface:
+        return interface
+    if os.name != 'nt':
+        return None
+    try:
+        all_ifaces = [name for name in get_if_list() if name.startswith('\\Device\\NPF_')]
+        if not all_ifaces:
+            return None
+        if upstream_url.startswith('ws://localhost') or upstream_url.startswith('ws://127.0.0.1'):
+            loopback = [name for name in all_ifaces if 'Loopback' in name]
+            if loopback:
+                return loopback[0]
+        return all_ifaces
+    except Exception as exc:  # noqa: BLE001
+        print(f'[FLEX agent] Interface auto-detect failed: {exc}')
+        return None
 
 
 def default_config_path() -> str:
@@ -548,6 +571,7 @@ def main() -> None:
     upstream_url = resolve_run_option(args.upstream_url, config, 'upstream_url', os.getenv('FLEX_UPSTREAM_URL', ''))
     rdns_mode = resolve_run_option(args.rdns_mode, config, 'rdns_mode', os.getenv('FLEX_AGENT_RDNS_MODE', 'auto'))
     agent_rdns_enabled = resolve_agent_rdns_enabled(str(rdns_mode), str(upstream_url))
+    iface = resolve_capture_interface(iface, str(upstream_url))
 
     protocol_port_map = dict(PROTOCOL_PORT_MAP)
     protocol_port_map.update(parse_protocol_port_map(protocol_port_map_text))
@@ -565,6 +589,7 @@ def main() -> None:
     capture_thread = threading.Thread(target=capture_loop, args=(iface, bpf, aggregator, stop_capture), daemon=True)
 
     print('[FLEX agent] Starting packet capture...')
+    print(f'[FLEX agent] Capture interface: {iface if iface else "default"}')
     capture_thread.start()
 
     loop = asyncio.new_event_loop()
